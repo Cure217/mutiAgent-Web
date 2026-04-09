@@ -36,7 +36,10 @@ export async function createSession(payload: CreateSessionPayload) {
   return client.post<never, AiSession>('/sessions', payload);
 }
 
-export async function sendSessionInput(id: string, payload: { content: string; appendNewLine?: boolean }) {
+export async function sendSessionInput(
+  id: string,
+  payload: { content: string; appendNewLine?: boolean; recordInput?: boolean }
+) {
   const client = await getHttpClient();
   return client.post(`/sessions/${id}/input`, payload);
 }
@@ -49,4 +52,14 @@ export async function stopSession(id: string, stopMode = 'graceful') {
 export async function fetchSessionMessages(id: string, params?: { pageNo?: number; pageSize?: number }) {
   const client = await getHttpClient();
   return client.get<never, PageData<MessageRecord>>(`/sessions/${id}/messages`, { params });
+}
+
+export async function fetchSessionRawOutput(id: string) {
+  const client = await getHttpClient();
+  return client.get<never, string>(`/sessions/${id}/raw-output`);
+}
+
+export async function resizeSessionTerminal(id: string, payload: { cols: number; rows: number }) {
+  const client = await getHttpClient();
+  return client.post(`/sessions/${id}/terminal/resize`, payload);
 }

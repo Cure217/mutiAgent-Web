@@ -48,6 +48,29 @@ export interface AppInstance {
   updatedAt: string;
 }
 
+export interface SystemConfig {
+  id: string;
+  configGroup: string;
+  configKey: string;
+  valueType: string;
+  valueText?: string | null;
+  valueJson?: string | null;
+  secretRef?: string | null;
+  remark?: string | null;
+  updatedAt: string;
+}
+
+export interface InstanceTestLaunchResult {
+  valid: boolean;
+  adapterType: string;
+  command: string[];
+  executable: string;
+  resolvedExecutable?: string | null;
+  workingDirectory?: string | null;
+  environmentKeys: string[];
+  warnings: string[];
+}
+
 export interface AiSession {
   id: string;
   appInstanceId: string;

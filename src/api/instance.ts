@@ -1,4 +1,4 @@
-import type { AppInstance } from '@/types/api';
+import type { AppInstance, InstanceTestLaunchResult } from '@/types/api';
 import { getHttpClient } from './http';
 
 export interface InstancePayload {
@@ -44,4 +44,9 @@ export async function enableInstance(id: string) {
 export async function disableInstance(id: string) {
   const client = await getHttpClient();
   return client.post(`/instances/${id}/disable`);
+}
+
+export async function testLaunchInstance(id: string) {
+  const client = await getHttpClient();
+  return client.post<never, InstanceTestLaunchResult>(`/instances/${id}/test-launch`);
 }

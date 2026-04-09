@@ -34,6 +34,27 @@ async function send() {
   }
 }
 
+async function handleTerminalInput(data: string) {
+  if (!data) {
+    return;
+  }
+  try {
+    await sessionStore.sendRawInput(sessionId.value, data);
+  } catch (error) {
+    ElMessage.error((error as Error).message);
+  }
+}
+
+async function handleTerminalResize(size: { cols: number; rows: number }) {
+  if (sessionStore.currentSessionStatus !== 'RUNNING') {
+    return;
+  }
+  try {
+    await sessionStore.resizeTerminal(sessionId.value, size.cols, size.rows);
+  } catch {
+  }
+}
+
 async function stop() {
   try {
     await sessionStore.stop(sessionId.value);
@@ -93,7 +114,13 @@ async function openRawLog() {
 
       <el-card class="page-card">
         <template #header>原始终端输出</template>
-        <TerminalPanel :chunks="sessionStore.rawChunks" :session-id="sessionId" />
+        <TerminalPanel
+          :chunks="sessionStore.rawChunks"
+          :session-id="sessionId"
+          :interactive="sessionStore.currentSessionStatus === 'RUNNING'"
+          @terminal-input="handleTerminalInput"
+          @terminal-resize="handleTerminalResize"
+        />
       </el-card>
     </div>
 

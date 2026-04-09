@@ -3,10 +3,12 @@ import { ElMessage } from 'element-plus';
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import StatusTag from '@/components/StatusTag.vue';
+import { useConfigStore } from '@/stores/configs';
 import { useInstanceStore } from '@/stores/instances';
 import { useSessionStore } from '@/stores/sessions';
 
 const router = useRouter();
+const configStore = useConfigStore();
 const instanceStore = useInstanceStore();
 const sessionStore = useSessionStore();
 const dialogVisible = ref(false);
@@ -22,7 +24,7 @@ const form = reactive({
 const hasInstances = computed(() => instanceStore.items.length > 0);
 
 onMounted(async () => {
-  await Promise.all([instanceStore.load(), sessionStore.loadList()]);
+  await Promise.all([instanceStore.load(), sessionStore.loadList(), configStore.load()]);
 });
 
 function openCreateDialog() {
@@ -32,7 +34,7 @@ function openCreateDialog() {
   }
   form.appInstanceId = instanceStore.items[0]?.id ?? '';
   form.title = '';
-  form.projectPath = 'D:\\Project\\ali\\260409';
+  form.projectPath = configStore.defaultProjectPath || 'D:\\Project\\ali\\260409';
   form.interactionMode = 'RAW';
   form.initInput = '';
   dialogVisible.value = true;

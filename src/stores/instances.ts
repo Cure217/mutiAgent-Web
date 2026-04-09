@@ -5,10 +5,11 @@ import {
   disableInstance,
   enableInstance,
   fetchInstances,
+  testLaunchInstance,
   type InstancePayload,
   updateInstance
 } from '@/api/instance';
-import type { AppInstance } from '@/types/api';
+import type { AppInstance, InstanceTestLaunchResult } from '@/types/api';
 
 export const useInstanceStore = defineStore('instances', () => {
   const items = ref<AppInstance[]>([]);
@@ -42,12 +43,17 @@ export const useInstanceStore = defineStore('instances', () => {
     await load();
   }
 
+  async function testLaunch(id: string): Promise<InstanceTestLaunchResult> {
+    return testLaunchInstance(id);
+  }
+
   return {
     items,
     loading,
     load,
     create,
     update,
-    toggleEnabled
+    toggleEnabled,
+    testLaunch
   };
 });

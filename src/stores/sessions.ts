@@ -5,13 +5,16 @@ import {
   fetchRunningSessions,
   fetchSession,
   fetchSessionMessages,
+  fetchSessionRawOutput,
   fetchSessions,
+  resizeSessionTerminal,
   sendSessionInput,
   stopSession,
   type CreateSessionPayload
 } from '@/api/session';
 import { createSessionSocket } from '@/api/ws';
 import type { AiSession, MessageRecord, SessionEventEnvelope } from '@/types/api';
+import { normalizeDisplayText, normalizeRawLogText } from '@/utils/text';
 
 export const useSessionStore = defineStore('sessions', () => {
   const items = ref<AiSession[]>([]);
@@ -39,10 +42,13 @@ export const useSessionStore = defineStore('sessions', () => {
   async function loadDetail(sessionId: string) {
     currentSession.value = await fetchSession(sessionId);
     const pageData = await fetchSessionMessages(sessionId, { pageNo: 1, pageSize: 500 });
-    messages.value = pageData.items;
-    rawChunks.value = pageData.items
-      .filter((item) => item.rawChunk)
-      .map((item) => item.rawChunk ?? '');
+    messages.value = pageData.items.map((item) => ({
+      ...item,
+      contentText: item.contentText ? normalizeDisplayText(item.contentText) : item.contentText,
+      rawChunk: item.rawChunk ? normalizeDisplayText(item.rawChunk) : item.rawChunk
+    }));
+    const rawOutput = await fetchSessionRawOutput(sessionId);
+    rawChunks.value = rawOutput ? [normalizeRawLogText(rawOutput)] : [];
   }
 
   async function create(payload: CreateSessionPayload) {
@@ -54,12 +60,25 @@ export const useSessionStore = defineStore('sessions', () => {
   async function sendInput(sessionId: string, content: string) {
     await sendSessionInput(sessionId, {
       content,
-      appendNewLine: true
+      appendNewLine: true,
+      recordInput: true
+    });
+  }
+
+  async function sendRawInput(sessionId: string, content: string) {
+    await sendSessionInput(sessionId, {
+      content,
+      appendNewLine: false,
+      recordInput: false
     });
   }
 
   async function stop(sessionId: string) {
     await stopSession(sessionId);
+  }
+
+  async function resizeTerminal(sessionId: string, cols: number, rows: number) {
+    await resizeSessionTerminal(sessionId, { cols, rows });
   }
 
   async function ensureSocket() {
@@ -99,7 +118,7 @@ export const useSessionStore = defineStore('sessions', () => {
     }
 
     if (event.event === 'session.output.raw') {
-      rawChunks.value.push(String(event.payload.chunk ?? ''));
+      rawChunks.value.push(normalizeDisplayText(String(event.payload.chunk ?? '')));
     }
 
     if (event.event === 'session.message.created') {
@@ -109,7 +128,7 @@ export const useSessionStore = defineStore('sessions', () => {
         seqNo: messages.value.length + 1,
         role: String(event.payload.role ?? 'assistant'),
         messageType: String(event.payload.messageType ?? 'text'),
-        contentText: String(event.payload.contentText ?? ''),
+        contentText: normalizeDisplayText(String(event.payload.contentText ?? '')),
         isStructured: Boolean(event.payload.isStructured),
         createdAt: String(event.payload.createdAt ?? event.timestamp)
       });
@@ -140,6 +159,8 @@ export const useSessionStore = defineStore('sessions', () => {
     loadDetail,
     create,
     sendInput,
+    sendRawInput,
+    resizeTerminal,
     stop,
     ensureSocket,
     disconnectSocket

@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { computed, onMounted, reactive, ref } from 'vue';
 import StatusTag from '@/components/StatusTag.vue';
+import { useConfigStore } from '@/stores/configs';
 import { useInstanceStore } from '@/stores/instances';
-import type { AppInstance } from '@/types/api';
+import type { AppInstance, InstanceTestLaunchResult } from '@/types/api';
 import type { InstancePayload } from '@/api/instance';
 
 const instanceStore = useInstanceStore();
+const configStore = useConfigStore();
 const keyword = ref('');
 const dialogVisible = ref(false);
 const editingId = ref<string | null>(null);
@@ -30,7 +32,7 @@ const form = reactive({
 const dialogTitle = computed(() => (editingId.value ? '编辑实例' : '新建实例'));
 
 onMounted(async () => {
-  await instanceStore.load();
+  await Promise.all([instanceStore.load(), configStore.load()]);
 });
 
 function openCreateDialog() {
@@ -44,7 +46,7 @@ function openCreateDialog() {
     executablePath: 'wsl.exe',
     launchCommand: 'codex',
     argsText: '',
-    workdir: 'D:\\Project\\ali\\260409',
+    workdir: configStore.defaultProjectPath || 'D:\\Project\\ali\\260409',
     envText: 'TERM=xterm-256color',
     enabled: true,
     autoRestart: false,
@@ -113,6 +115,22 @@ async function toggle(instance: AppInstance) {
   }
 }
 
+async function testLaunch(instance: AppInstance) {
+  try {
+    const result = await instanceStore.testLaunch(instance.id);
+    await ElMessageBox.alert(
+      `<div style="white-space: pre-wrap; word-break: break-all;">${escapeHtml(buildTestLaunchSummary(instance, result))}</div>`,
+      '测试启动结果',
+      {
+        confirmButtonText: '知道了',
+        dangerouslyUseHTMLString: true
+      }
+    );
+  } catch (error) {
+    ElMessage.error((error as Error).message);
+  }
+}
+
 async function chooseDirectory() {
   if (!window.desktopBridge) {
     return;
@@ -158,6 +176,34 @@ function parseEnvLines(value: string) {
       return acc;
     }, {});
 }
+
+function buildTestLaunchSummary(instance: AppInstance, result: InstanceTestLaunchResult) {
+  const lines = [
+    `实例名称：${instance.name}`,
+    `适配器：${result.adapterType}`,
+    `可执行程序：${result.executable}`,
+    `解析路径：${result.resolvedExecutable ?? '未解析（可能依赖外部 shell / WSL）'}`,
+    `工作目录：${result.workingDirectory ?? '-'}`,
+    `命令预览：${result.command.join(' ')}`,
+    `环境变量键：${result.environmentKeys.length ? result.environmentKeys.join(', ') : '无'}`
+  ];
+
+  if (result.warnings.length) {
+    lines.push('', '提示：');
+    lines.push(...result.warnings.map((warning) => `- ${warning}`));
+  }
+
+  return lines.join('\n');
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
 </script>
 
 <template>
@@ -184,9 +230,10 @@ function parseEnvLines(value: string) {
           </template>
         </el-table-column>
         <el-table-column prop="lastStartAt" label="最近启动" min-width="180" />
-        <el-table-column label="操作" width="220" fixed="right">
+        <el-table-column label="操作" width="280" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="openEditDialog(row)">编辑</el-button>
+            <el-button link type="success" @click="testLaunch(row)">测试启动</el-button>
             <el-button link @click="toggle(row)">{{ row.enabled ? '禁用' : '启用' }}</el-button>
           </template>
         </el-table-column>
@@ -247,7 +294,7 @@ function parseEnvLines(value: string) {
             v-model="form.envText"
             type="textarea"
             :rows="4"
-            placeholder="每行一个 KEY=VALUE"
+            placeholder="每行一个 KEY=VALUE&#10;例如：TERM=xterm-256color&#10;如果终端中文乱码，可加：MUTI_AGENT_CHARSET=GB18030"
           />
         </el-form-item>
         <el-form-item label="备注">
