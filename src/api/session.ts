@@ -1,4 +1,4 @@
-import type { AiSession, MessageRecord, PageData } from '@/types/api';
+import type { AiSession, MessageRecord, PageData, SessionTimelineItem } from '@/types/api';
 import { getHttpClient } from './http';
 
 export interface CreateSessionPayload {
@@ -54,9 +54,22 @@ export async function fetchSessionMessages(id: string, params?: { pageNo?: numbe
   return client.get<never, PageData<MessageRecord>>(`/sessions/${id}/messages`, { params });
 }
 
+export async function fetchSessionMessagesAround(
+  id: string,
+  params: { messageId: string; before?: number; after?: number }
+) {
+  const client = await getHttpClient();
+  return client.get<never, MessageRecord[]>(`/sessions/${id}/messages/around`, { params });
+}
+
 export async function fetchSessionRawOutput(id: string) {
   const client = await getHttpClient();
   return client.get<never, string>(`/sessions/${id}/raw-output`);
+}
+
+export async function fetchSessionTimeline(id: string, params?: { limit?: number }) {
+  const client = await getHttpClient();
+  return client.get<never, SessionTimelineItem[]>(`/sessions/${id}/timeline`, { params });
 }
 
 export async function resizeSessionTerminal(id: string, payload: { cols: number; rows: number }) {

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref, watch } from 'vue';
 import StatusTag from '@/components/StatusTag.vue';
 import { useConfigStore } from '@/stores/configs';
 import { useInstanceStore } from '@/stores/instances';
@@ -17,10 +17,10 @@ const form = reactive({
   name: '',
   appType: 'codex',
   adapterType: 'codex-cli',
-  runtimeEnv: 'wsl',
+  runtimeEnv: 'windows',
   launchMode: 'external',
-  executablePath: 'wsl.exe',
-  launchCommand: 'codex',
+  executablePath: '',
+  launchCommand: 'codex.cmd',
   argsText: '',
   workdir: 'D:\\Project\\ali\\260409',
   envText: 'TERM=xterm-256color',
@@ -30,10 +30,35 @@ const form = reactive({
 });
 
 const dialogTitle = computed(() => (editingId.value ? '编辑实例' : '新建实例'));
+const runtimeEnvHint = computed(() =>
+  form.runtimeEnv === 'wsl'
+    ? '这里表示 AI 命令实际运行在 WSL 中；即使宿主机是 Windows，也会走 WSL。'
+    : '这里表示 AI 命令直接运行在 Windows 本机环境中。'
+);
 
 onMounted(async () => {
   await Promise.all([instanceStore.load(), configStore.load()]);
 });
+
+watch(
+  () => form.runtimeEnv,
+  (runtimeEnv) => {
+    if (runtimeEnv === 'windows' && form.executablePath === 'wsl.exe') {
+      form.executablePath = '';
+    }
+    if (runtimeEnv === 'windows' && (!form.launchCommand || form.launchCommand === 'codex')) {
+      form.launchCommand = 'codex.cmd';
+    }
+    if (runtimeEnv === 'wsl') {
+      if (!form.executablePath) {
+        form.executablePath = 'wsl.exe';
+      }
+      if (!form.launchCommand || form.launchCommand === 'codex.cmd') {
+        form.launchCommand = 'codex';
+      }
+    }
+  }
+);
 
 function openCreateDialog() {
   editingId.value = null;
@@ -41,10 +66,10 @@ function openCreateDialog() {
     name: '',
     appType: 'codex',
     adapterType: 'codex-cli',
-    runtimeEnv: 'wsl',
+    runtimeEnv: 'windows',
     launchMode: 'external',
-    executablePath: 'wsl.exe',
-    launchCommand: 'codex',
+    executablePath: '',
+    launchCommand: 'codex.cmd',
     argsText: '',
     workdir: configStore.defaultProjectPath || 'D:\\Project\\ali\\260409',
     envText: 'TERM=xterm-256color',
@@ -255,12 +280,16 @@ function escapeHtml(value: string) {
         <el-form-item label="适配器">
           <el-input v-model="form.adapterType" />
         </el-form-item>
-        <el-form-item label="运行环境">
+        <el-form-item label="命令运行环境">
           <el-select v-model="form.runtimeEnv">
+            <el-option label="Windows 直接运行" value="windows" />
             <el-option label="WSL" value="wsl" />
             <el-option label="PowerShell" value="powershell" />
             <el-option label="Git Bash" value="git-bash" />
           </el-select>
+        </el-form-item>
+        <el-form-item label="环境说明">
+          <el-alert :title="runtimeEnvHint" type="info" :closable="false" show-icon />
         </el-form-item>
         <el-form-item label="启动模式">
           <el-select v-model="form.launchMode">
@@ -294,7 +323,7 @@ function escapeHtml(value: string) {
             v-model="form.envText"
             type="textarea"
             :rows="4"
-            placeholder="每行一个 KEY=VALUE&#10;例如：TERM=xterm-256color&#10;如果终端中文乱码，可加：MUTI_AGENT_CHARSET=GB18030"
+            placeholder="每行一个 KEY=VALUE&#10;例如：TERM=xterm-256color&#10;如果终端中文乱码，可加：MUTI_AGENT_CHARSET=GB18030&#10;Windows 直跑 Codex 通常不需要配置 WSL 相关参数"
           />
         </el-form-item>
         <el-form-item label="备注">

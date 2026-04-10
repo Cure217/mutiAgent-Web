@@ -105,6 +105,59 @@ export interface MessageRecord {
   isStructured?: boolean;
   sourceAdapter?: string | null;
   createdAt: string;
+  pending?: boolean;
+  failed?: boolean;
+}
+
+export interface SessionTimelineItem {
+  itemId: string;
+  sessionId: string;
+  messageId?: string | null;
+  seqNo?: number | null;
+  itemType: string;
+  eventType: string;
+  title: string;
+  role?: string | null;
+  messageType?: string | null;
+  content?: string | null;
+  createdAt: string;
+}
+
+export interface HistorySearchSessionHit {
+  sessionId: string;
+  title: string;
+  appInstanceId: string;
+  appType: string;
+  instanceName?: string | null;
+  projectPath?: string | null;
+  status: string;
+  interactionMode: string;
+  createdAt: string;
+  lastMessageAt?: string | null;
+  summary?: string | null;
+  matchedMessageText?: string | null;
+  matchedText?: string | null;
+  matchedSource?: string | null;
+}
+
+export interface HistorySearchMessageHit {
+  messageId: string;
+  sessionId: string;
+  sessionTitle: string;
+  appInstanceId: string;
+  appType: string;
+  instanceName?: string | null;
+  projectPath?: string | null;
+  seqNo?: number | null;
+  role: string;
+  messageType: string;
+  snippet?: string | null;
+  createdAt: string;
+}
+
+export interface HistorySearchResult {
+  sessions: HistorySearchSessionHit[];
+  messages: HistorySearchMessageHit[];
 }
 
 export interface SessionEventEnvelope<T = Record<string, unknown>> {

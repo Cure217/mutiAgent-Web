@@ -5,7 +5,9 @@ import {
   fetchRunningSessions,
   fetchSession,
   fetchSessionMessages,
+  fetchSessionMessagesAround,
   fetchSessionRawOutput,
+  fetchSessionTimeline,
   fetchSessions,
   resizeSessionTerminal,
   sendSessionInput,
@@ -13,18 +15,22 @@ import {
   type CreateSessionPayload
 } from '@/api/session';
 import { createSessionSocket } from '@/api/ws';
-import type { AiSession, MessageRecord, SessionEventEnvelope } from '@/types/api';
-import { normalizeDisplayText, normalizeRawLogText } from '@/utils/text';
+import type { AiSession, MessageRecord, SessionEventEnvelope, SessionTimelineItem } from '@/types/api';
+import { normalizeMessageText, normalizeRawLogText, normalizeTerminalText } from '@/utils/text';
 
 export const useSessionStore = defineStore('sessions', () => {
   const items = ref<AiSession[]>([]);
   const runningItems = ref<AiSession[]>([]);
   const currentSession = ref<AiSession | null>(null);
   const messages = ref<MessageRecord[]>([]);
+  const timelineItems = ref<SessionTimelineItem[]>([]);
   const rawChunks = ref<string[]>([]);
   const loading = ref(false);
   const socket = ref<WebSocket | null>(null);
   const socketConnected = ref(false);
+  const highlightedMessageId = ref<string | null>(null);
+  const lastSessionError = ref<string | null>(null);
+  let refreshTimer: number | null = null;
 
   const currentSessionStatus = computed(() => currentSession.value?.status ?? 'UNKNOWN');
 
@@ -39,16 +45,24 @@ export const useSessionStore = defineStore('sessions', () => {
     }
   }
 
-  async function loadDetail(sessionId: string) {
+  async function loadDetail(sessionId: string, options?: { messageId?: string | null }) {
+    messages.value = [];
+    timelineItems.value = [];
+    rawChunks.value = [];
+    lastSessionError.value = null;
     currentSession.value = await fetchSession(sessionId);
-    const pageData = await fetchSessionMessages(sessionId, { pageNo: 1, pageSize: 500 });
-    messages.value = pageData.items.map((item) => ({
-      ...item,
-      contentText: item.contentText ? normalizeDisplayText(item.contentText) : item.contentText,
-      rawChunk: item.rawChunk ? normalizeDisplayText(item.rawChunk) : item.rawChunk
-    }));
+    const targetMessageId = options?.messageId || null;
+    const messageItems = targetMessageId
+      ? await fetchSessionMessagesAround(sessionId, { messageId: targetMessageId, before: 60, after: 60 })
+      : await fetchAllSessionMessages(sessionId);
+    messages.value = messageItems.map(normalizeMessageRecord);
+    highlightedMessageId.value = targetMessageId;
     const rawOutput = await fetchSessionRawOutput(sessionId);
     rawChunks.value = rawOutput ? [normalizeRawLogText(rawOutput)] : [];
+    timelineItems.value = (await fetchSessionTimeline(sessionId, { limit: 200 })).map((item) => ({
+      ...item,
+      content: item.content ? normalizeMessageText(item.content) : item.content
+    }));
   }
 
   async function create(payload: CreateSessionPayload) {
@@ -58,11 +72,23 @@ export const useSessionStore = defineStore('sessions', () => {
   }
 
   async function sendInput(sessionId: string, content: string) {
-    await sendSessionInput(sessionId, {
-      content,
-      appendNewLine: true,
-      recordInput: true
-    });
+    const normalizedContent = content.replace(/\r\n/g, '\n');
+    const optimisticMessage = appendOptimisticUserMessage(sessionId, normalizedContent);
+    lastSessionError.value = null;
+    try {
+      await sendSessionInput(sessionId, {
+        content: normalizedContent,
+        appendNewLine: true,
+        recordInput: true
+      });
+      if (!socketConnected.value) {
+        scheduleRefresh(sessionId);
+      }
+      return optimisticMessage.id;
+    } catch (error) {
+      markMessageFailed(optimisticMessage.id);
+      throw error;
+    }
   }
 
   async function sendRawInput(sessionId: string, content: string) {
@@ -110,40 +136,201 @@ export const useSessionStore = defineStore('sessions', () => {
 
   function handleSocketEvent(event: SessionEventEnvelope<Record<string, unknown>>) {
     if (event.event === 'session.status.changed' || event.event === 'session.closed') {
-      syncSessionStatus(event.sessionId, String(event.payload.status ?? 'UNKNOWN'));
+      syncSessionStatus(
+        event.sessionId,
+        String(event.payload.status ?? 'UNKNOWN'),
+        typeof event.payload.exitReason === 'string' ? event.payload.exitReason : undefined,
+        typeof event.payload.exitCode === 'number' ? event.payload.exitCode : undefined
+      );
     }
 
     if (currentSession.value?.id !== event.sessionId) {
       return;
     }
 
+    if (event.event === 'session.error') {
+      lastSessionError.value = normalizeMessageText(String(event.payload.message ?? '会话运行异常'));
+      return;
+    }
+
     if (event.event === 'session.output.raw') {
-      rawChunks.value.push(normalizeDisplayText(String(event.payload.chunk ?? '')));
+      rawChunks.value.push(normalizeTerminalText(String(event.payload.chunk ?? '')));
     }
 
     if (event.event === 'session.message.created') {
-      messages.value.push({
+      const message = normalizeMessageRecord({
         id: String(event.payload.messageId ?? crypto.randomUUID()),
         sessionId: event.sessionId,
-        seqNo: messages.value.length + 1,
+        seqNo: Number(event.payload.seqNo ?? messages.value.length + 1),
         role: String(event.payload.role ?? 'assistant'),
         messageType: String(event.payload.messageType ?? 'text'),
-        contentText: normalizeDisplayText(String(event.payload.contentText ?? '')),
+        contentText: String(event.payload.contentText ?? ''),
         isStructured: Boolean(event.payload.isStructured),
         createdAt: String(event.payload.createdAt ?? event.timestamp)
+      });
+      upsertMessage(message);
+      upsertTimelineItem({
+        itemId: `message-${message.id}`,
+        sessionId: event.sessionId,
+        messageId: message.id,
+        seqNo: message.seqNo,
+        itemType: 'message',
+        eventType: 'message',
+        title: `消息 #${message.seqNo}`,
+        role: message.role,
+        messageType: message.messageType,
+        content: message.contentText,
+        createdAt: message.createdAt
       });
     }
   }
 
-  function syncSessionStatus(sessionId: string, status: string) {
-    items.value = items.value.map((item) => (item.id === sessionId ? { ...item, status } : item));
-    runningItems.value = runningItems.value.map((item) => (item.id === sessionId ? { ...item, status } : item));
+  function syncSessionStatus(sessionId: string, status: string, exitReason?: string, exitCode?: number) {
+    items.value = items.value.map((item) => (item.id === sessionId ? { ...item, status, exitReason, exitCode } : item));
+    runningItems.value = runningItems.value.map((item) =>
+      item.id === sessionId ? { ...item, status, exitReason, exitCode } : item
+    );
     if (currentSession.value?.id === sessionId) {
       currentSession.value = {
         ...currentSession.value,
-        status
+        status,
+        exitReason: exitReason ?? currentSession.value.exitReason,
+        exitCode: exitCode ?? currentSession.value.exitCode
       };
     }
+  }
+
+  function normalizeMessageRecord(message: MessageRecord): MessageRecord {
+    return {
+      ...message,
+      contentText: message.contentText ? normalizeMessageText(message.contentText) : message.contentText,
+      rawChunk: message.rawChunk ? normalizeMessageText(message.rawChunk) : message.rawChunk
+    };
+  }
+
+  async function fetchAllSessionMessages(sessionId: string) {
+    const firstPage = await fetchSessionMessages(sessionId, { pageNo: 1, pageSize: 500 });
+    if (firstPage.total <= firstPage.items.length) {
+      return firstPage.items;
+    }
+
+    const expandedPageSize = Math.min(Math.max(firstPage.total, 500), 5000);
+    if (expandedPageSize === firstPage.pageSize) {
+      return firstPage.items;
+    }
+
+    return (await fetchSessionMessages(sessionId, { pageNo: 1, pageSize: expandedPageSize })).items;
+  }
+
+  function appendOptimisticUserMessage(sessionId: string, content: string) {
+    const optimisticMessage = normalizeMessageRecord({
+      id: `local-${crypto.randomUUID()}`,
+      sessionId,
+      seqNo: (messages.value[messages.value.length - 1]?.seqNo ?? 0) + 1,
+      role: 'user',
+      messageType: 'text',
+      contentText: content,
+      createdAt: new Date().toISOString(),
+      pending: true
+    });
+    messages.value.push(optimisticMessage);
+    sortMessages();
+    return optimisticMessage;
+  }
+
+  function upsertMessage(message: MessageRecord) {
+    const existingIndex = messages.value.findIndex((item) => item.id === message.id);
+    if (existingIndex >= 0) {
+      messages.value[existingIndex] = {
+        ...messages.value[existingIndex],
+        ...message,
+        pending: false,
+        failed: false
+      };
+      sortMessages();
+      return;
+    }
+
+    const optimisticIndex = messages.value.findIndex(
+      (item) =>
+        item.pending
+        && item.role === message.role
+        && item.messageType === message.messageType
+        && item.contentText === message.contentText
+    );
+    if (optimisticIndex >= 0) {
+      messages.value[optimisticIndex] = {
+        ...messages.value[optimisticIndex],
+        ...message,
+        pending: false,
+        failed: false
+      };
+      sortMessages();
+      return;
+    }
+
+    messages.value.push({
+      ...message,
+      pending: false,
+      failed: false
+    });
+    sortMessages();
+  }
+
+  function upsertTimelineItem(item: SessionTimelineItem) {
+    const existingIndex = timelineItems.value.findIndex((current) => current.itemId === item.itemId);
+    const normalizedItem = {
+      ...item,
+      content: item.content ? normalizeMessageText(item.content) : item.content
+    };
+    if (existingIndex >= 0) {
+      timelineItems.value[existingIndex] = normalizedItem;
+      sortTimelineItems();
+      return;
+    }
+    timelineItems.value.push(normalizedItem);
+    sortTimelineItems();
+  }
+
+  function markMessageFailed(messageId: string) {
+    const targetIndex = messages.value.findIndex((item) => item.id === messageId);
+    if (targetIndex < 0) {
+      return;
+    }
+    messages.value[targetIndex] = {
+      ...messages.value[targetIndex],
+      pending: false,
+      failed: true
+    };
+  }
+
+  function sortMessages() {
+    messages.value = [...messages.value].sort((left, right) => {
+      if ((left.seqNo ?? 0) !== (right.seqNo ?? 0)) {
+        return (left.seqNo ?? 0) - (right.seqNo ?? 0);
+      }
+      return left.createdAt.localeCompare(right.createdAt);
+    });
+  }
+
+  function sortTimelineItems() {
+    timelineItems.value = [...timelineItems.value].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  }
+
+  function scheduleRefresh(sessionId: string) {
+    if (currentSession.value?.id !== sessionId) {
+      return;
+    }
+    if (refreshTimer !== null) {
+      window.clearTimeout(refreshTimer);
+    }
+    refreshTimer = window.setTimeout(async () => {
+      refreshTimer = null;
+      try {
+        await loadDetail(sessionId);
+      } catch {
+      }
+    }, 800);
   }
 
   return {
@@ -152,9 +339,12 @@ export const useSessionStore = defineStore('sessions', () => {
     currentSession,
     currentSessionStatus,
     messages,
+    timelineItems,
     rawChunks,
     loading,
     socketConnected,
+    highlightedMessageId,
+    lastSessionError,
     loadList,
     loadDetail,
     create,
