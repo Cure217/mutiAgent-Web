@@ -14,6 +14,36 @@ type DisplayMessage = MessageRecord & {
   mergedCount: number;
 };
 
+function isPromptEcho(line: string, lastUserText: string) {
+  if (!line || !lastUserText) {
+    return false;
+  }
+
+  return lastUserText
+    .split('\n')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .some((userLine) =>
+      line === userLine
+      || userLine.startsWith(line)
+      || line.startsWith(userLine)
+      || (line.length <= 8 && userLine.includes(line))
+    );
+}
+
+function stripPromptEcho(displayText: string, lastUserText: string) {
+  if (!displayText || !lastUserText) {
+    return displayText;
+  }
+
+  return displayText
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && !isPromptEcho(line, lastUserText))
+    .join('\n')
+    .trim();
+}
+
 function mergeDisplayText(currentText: string, nextText: string) {
   if (!nextText) {
     return currentText;
@@ -37,20 +67,25 @@ function mergeDisplayText(currentText: string, nextText: string) {
 const visibleMessages = computed<DisplayMessage[]>(() => {
   const result: DisplayMessage[] = [];
   let activeAssistantGroup: DisplayMessage | null = null;
+  let lastUserText = '';
 
   for (const message of props.messages) {
     const rawText = message.contentText || message.rawChunk || '';
+    const normalizedRawText = normalizeMessageText(rawText);
     const displayText = message.role === 'assistant' && message.messageType === 'raw'
-      ? cleanupCodexTuiMessage(rawText)
-      : normalizeMessageText(rawText);
+      ? stripPromptEcho(cleanupCodexTuiMessage(rawText), lastUserText)
+      : normalizedRawText;
 
     if (!displayText && !message.pending && !message.failed) {
+      if (message.role === 'user') {
+        lastUserText = normalizedRawText;
+      }
       continue;
     }
 
     const nextItem: DisplayMessage = {
       ...message,
-      displayText: displayText || normalizeMessageText(rawText) || '-',
+      displayText: displayText || normalizedRawText || '-',
       domId: message.id,
       mergedCount: 1
     };
@@ -61,6 +96,9 @@ const visibleMessages = computed<DisplayMessage[]>(() => {
       && !message.failed;
 
     if (!mergeIntoAssistantGroup) {
+      if (message.role === 'user') {
+        lastUserText = normalizedRawText;
+      }
       activeAssistantGroup = null;
       result.push(nextItem);
       continue;

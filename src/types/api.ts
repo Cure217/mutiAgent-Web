@@ -93,6 +93,17 @@ export interface AiSession {
   updatedAt: string;
 }
 
+export interface SessionWorkspaceMeta {
+  workspaceKind?: string | null;
+  role?: string | null;
+  coordinationStatus?: string | null;
+  progressSummary?: string | null;
+  blockedReason?: string | null;
+  dependencySessionIds?: string[] | null;
+  sharedContextSummary?: string | null;
+  updatedAt?: string | null;
+}
+
 export interface MessageRecord {
   id: string;
   sessionId: string;
@@ -156,8 +167,19 @@ export interface HistorySearchMessageHit {
 }
 
 export interface HistorySearchResult {
-  sessions: HistorySearchSessionHit[];
-  messages: HistorySearchMessageHit[];
+  sessions: PageData<HistorySearchSessionHit>;
+  messages: PageData<HistorySearchMessageHit>;
+}
+
+export interface OperationLogRecord {
+  id: string;
+  targetType: string;
+  targetId?: string | null;
+  action: string;
+  result: string;
+  operatorName: string;
+  detailJson?: string | null;
+  createdAt: string;
 }
 
 export interface SessionEventEnvelope<T = Record<string, unknown>> {

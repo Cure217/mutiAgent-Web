@@ -108,6 +108,8 @@ const CODEX_CONTEXT_LINE = /^\d+%\s+context\s+left$/i;
 const CODEX_SPINNER_LINE = /^[⠁-⣿]+(?:\s+.*)?$/;
 const CODEX_BOX_DRAWING_ONLY = /^[╭╮╰╯│─╴╶┌┐└┘├┤┬┴┼_\s]+$/;
 const CODEX_WORKING_FRAGMENT = /^(?:[\u2022\u25e6·]\s*)?(?:\d+|W|Wo|or|rk|ki|in|ng|Wng|Wog|Working?)$/i;
+const CODEX_WORKING_LINE = /^(?:[\u2022\u25e6·]\s*)?Working\b.*$/i;
+const CODEX_SHORT_ASCII_FRAGMENT = /^[\u2022\u25e6·A-Za-z0-9]+$/;
 
 function stripCodexTrailingStatus(line: string) {
   return line
@@ -122,24 +124,36 @@ function shouldSkipCodexLine(line: string) {
     return true;
   }
 
-  if (
-    CODEX_PROMPT_ONLY.test(line)
-    || CODEX_CONTEXT_LINE.test(line)
+  const normalized = line.toLowerCase();
+  const normalizedWithoutBox = normalized.replace(/^[╭╮╰╯│─╴╶┌┐└┘├┤┬┴┼_\s]+/g, '').trim();
+    const compactLine = line.replace(/\s+/g, '');
+
+    if (
+    !normalizedWithoutBox
+    || CODEX_PROMPT_ONLY.test(line)
+      || CODEX_CONTEXT_LINE.test(line)
     || CODEX_SPINNER_LINE.test(line)
     || CODEX_BOX_DRAWING_ONLY.test(line)
     || CODEX_WORKING_FRAGMENT.test(line)
+    || CODEX_WORKING_LINE.test(line)
+    || (compactLine.length <= 4 && CODEX_SHORT_ASCII_FRAGMENT.test(compactLine))
   ) {
     return true;
   }
 
-  const normalized = line.toLowerCase();
-  return normalized.includes('tab to queue message')
+  return normalized.startsWith('›')
+    || normalized.startsWith('>')
+    || normalized.includes('›')
+    || normalized.includes('tab to queue message')
     || normalized.includes('context left')
+    || normalized.includes('esc to interrupt')
     || normalized.includes('press enter to continue')
     || normalized.includes('openai codex')
     || normalized.startsWith('gpt-')
-    || normalized.startsWith('model:')
-    || normalized.startsWith('directory:');
+    || normalizedWithoutBox.startsWith('model:')
+    || normalizedWithoutBox.startsWith('directory:')
+    || normalizedWithoutBox.includes('model:')
+    || normalizedWithoutBox.includes('directory:');
 }
 
 export function cleanupCodexTuiMessage(text: string) {

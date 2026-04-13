@@ -17,8 +17,18 @@ const dialogVisible = ref(false);
 const historyLoading = ref(false);
 const historySearched = ref(false);
 const historyResult = ref<HistorySearchResult>({
-  sessions: [],
-  messages: []
+  sessions: {
+    items: [],
+    pageNo: 1,
+    pageSize: 10,
+    total: 0
+  },
+  messages: {
+    items: [],
+    pageNo: 1,
+    pageSize: 10,
+    total: 0
+  }
 });
 
 const form = reactive({
@@ -35,10 +45,25 @@ const historyForm = reactive({
   projectPath: '',
   dateRange: [] as string[]
 });
+const historyQuery = reactive({
+  sessionPageNo: 1,
+  sessionPageSize: 10,
+  sessionSortValue: 'lastMessageAt_desc',
+  messagePageNo: 1,
+  messagePageSize: 10,
+  messageSortValue: 'relevance_asc'
+});
 
 const hasInstances = computed(() => instanceStore.items.length > 0);
 const appTypeOptions = computed(() =>
   Array.from(new Set(instanceStore.items.map((item) => item.appType).filter(Boolean)))
+);
+const historyKeywordTokens = computed(() =>
+  historyForm.keyword
+    .split(/\s+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .sort((left, right) => right.length - left.length)
 );
 
 onMounted(async () => {
@@ -96,14 +121,22 @@ async function submitHistorySearch() {
   historyLoading.value = true;
   try {
     const [dateFrom, dateTo] = historyForm.dateRange;
+    const [sessionSortBy, sessionSortDirection] = historyQuery.sessionSortValue.split('_');
+    const [messageSortBy, messageSortDirection] = historyQuery.messageSortValue.split('_');
     historyResult.value = await searchHistory({
       keyword: historyForm.keyword || undefined,
       appType: historyForm.appType || undefined,
       projectPath: historyForm.projectPath || undefined,
       dateFrom: dateFrom || undefined,
       dateTo: dateTo || undefined,
-      sessionLimit: 20,
-      messageLimit: 20
+      sessionPageNo: historyQuery.sessionPageNo,
+      sessionPageSize: historyQuery.sessionPageSize,
+      sessionSortBy,
+      sessionSortDirection,
+      messagePageNo: historyQuery.messagePageNo,
+      messagePageSize: historyQuery.messagePageSize,
+      messageSortBy,
+      messageSortDirection
     });
     historySearched.value = true;
   } catch (error) {
@@ -118,11 +151,80 @@ function resetHistorySearch() {
   historyForm.appType = '';
   historyForm.projectPath = '';
   historyForm.dateRange = [];
+  historyQuery.sessionPageNo = 1;
+  historyQuery.sessionPageSize = 10;
+  historyQuery.sessionSortValue = 'lastMessageAt_desc';
+  historyQuery.messagePageNo = 1;
+  historyQuery.messagePageSize = 10;
+  historyQuery.messageSortValue = 'relevance_asc';
   historyResult.value = {
-    sessions: [],
-    messages: []
+    sessions: {
+      items: [],
+      pageNo: 1,
+      pageSize: 10,
+      total: 0
+    },
+    messages: {
+      items: [],
+      pageNo: 1,
+      pageSize: 10,
+      total: 0
+    }
   };
   historySearched.value = false;
+}
+
+function escapeHtml(value?: string | null) {
+  return (value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function highlightSearchText(value?: string | null) {
+  const safeText = escapeHtml(value || '-');
+  if (!historyKeywordTokens.value.length || !value) {
+    return safeText;
+  }
+
+  const pattern = new RegExp(`(${historyKeywordTokens.value.map(escapeRegExp).join('|')})`, 'gi');
+  return safeText.replace(pattern, '<mark class="search-hit">$1</mark>');
+}
+
+async function handleHistorySearch(resetPaging = false) {
+  if (resetPaging) {
+    historyQuery.sessionPageNo = 1;
+    historyQuery.messagePageNo = 1;
+  }
+  await submitHistorySearch();
+}
+
+async function handleSessionPageChange(pageNo: number) {
+  historyQuery.sessionPageNo = pageNo;
+  await handleHistorySearch(false);
+}
+
+async function handleSessionPageSizeChange(pageSize: number) {
+  historyQuery.sessionPageSize = pageSize;
+  historyQuery.sessionPageNo = 1;
+  await handleHistorySearch(false);
+}
+
+async function handleMessagePageChange(pageNo: number) {
+  historyQuery.messagePageNo = pageNo;
+  await handleHistorySearch(false);
+}
+
+async function handleMessagePageSizeChange(pageSize: number) {
+  historyQuery.messagePageSize = pageSize;
+  historyQuery.messagePageNo = 1;
+  await handleHistorySearch(false);
 }
 </script>
 
@@ -148,7 +250,7 @@ function resetHistorySearch() {
                 v-model="historyForm.keyword"
                 placeholder="搜索会话标题、项目路径、消息内容"
                 clearable
-                @keyup.enter="submitHistorySearch"
+                @keyup.enter="handleHistorySearch(true)"
               />
             </el-form-item>
           </el-col>
@@ -182,7 +284,7 @@ function resetHistorySearch() {
           <el-col :span="16">
             <el-form-item label=" ">
               <div class="page-toolbar">
-                <el-button :loading="historyLoading" type="primary" @click="submitHistorySearch">开始检索</el-button>
+                <el-button :loading="historyLoading" type="primary" @click="handleHistorySearch(true)">开始检索</el-button>
                 <el-button @click="resetHistorySearch">重置</el-button>
               </div>
             </el-form-item>
@@ -194,18 +296,38 @@ function resetHistorySearch() {
     <el-card v-if="historySearched" class="page-card" v-loading="historyLoading">
       <template #header>
         <div class="card-header">
-          检索结果（会话 {{ historyResult.sessions.length }} 条，消息 {{ historyResult.messages.length }} 条）
+          检索结果（会话 {{ historyResult.sessions.total }} 条，消息 {{ historyResult.messages.total }} 条）
         </div>
       </template>
 
       <div class="result-block">
-        <h3>会话命中</h3>
-        <el-empty v-if="historyResult.sessions.length === 0" description="暂无会话命中" />
-        <el-table v-else :data="historyResult.sessions">
-          <el-table-column prop="title" label="会话标题" min-width="220" />
+        <div class="result-head">
+          <h3>会话命中</h3>
+          <div class="result-actions">
+            <el-select v-model="historyQuery.sessionSortValue" style="width: 180px" @change="handleHistorySearch(false)">
+              <el-option label="最近活跃优先" value="lastMessageAt_desc" />
+              <el-option label="最近活跃最早" value="lastMessageAt_asc" />
+              <el-option label="最新创建优先" value="createdAt_desc" />
+              <el-option label="最早创建优先" value="createdAt_asc" />
+              <el-option label="标题 A-Z" value="title_asc" />
+              <el-option label="标题 Z-A" value="title_desc" />
+            </el-select>
+          </div>
+        </div>
+        <el-empty v-if="historyResult.sessions.total === 0" description="暂无会话命中" />
+        <el-table v-else :data="historyResult.sessions.items">
+          <el-table-column label="会话标题" min-width="220">
+            <template #default="{ row }">
+              <div class="highlight-cell" :title="row.title" v-html="highlightSearchText(row.title)" />
+            </template>
+          </el-table-column>
           <el-table-column prop="appType" label="应用类型" width="120" />
           <el-table-column prop="matchedSource" label="命中来源" width="140" />
-          <el-table-column prop="matchedText" label="命中内容" min-width="260" show-overflow-tooltip />
+          <el-table-column label="命中内容" min-width="260">
+            <template #default="{ row }">
+              <div class="highlight-cell" :title="row.matchedText || ''" v-html="highlightSearchText(row.matchedText)" />
+            </template>
+          </el-table-column>
           <el-table-column prop="createdAt" label="创建时间" min-width="180" />
           <el-table-column label="操作" width="140" fixed="right">
             <template #default="{ row }">
@@ -213,16 +335,47 @@ function resetHistorySearch() {
             </template>
           </el-table-column>
         </el-table>
+        <div class="pagination-bar">
+          <el-pagination
+            background
+            layout="total, sizes, prev, pager, next"
+            :current-page="historyResult.sessions.pageNo"
+            :page-size="historyResult.sessions.pageSize"
+            :page-sizes="[10, 20, 50]"
+            :total="historyResult.sessions.total"
+            @current-change="handleSessionPageChange"
+            @size-change="handleSessionPageSizeChange"
+          />
+        </div>
       </div>
 
       <div class="result-block">
-        <h3>消息命中</h3>
-        <el-empty v-if="historyResult.messages.length === 0" description="暂无消息命中" />
-        <el-table v-else :data="historyResult.messages">
-          <el-table-column prop="sessionTitle" label="所属会话" min-width="220" />
+        <div class="result-head">
+          <h3>消息命中</h3>
+          <div class="result-actions">
+            <el-select v-model="historyQuery.messageSortValue" style="width: 180px" @change="handleHistorySearch(false)">
+              <el-option label="相关度优先" value="relevance_asc" />
+              <el-option label="最新消息优先" value="createdAt_desc" />
+              <el-option label="最早消息优先" value="createdAt_asc" />
+              <el-option label="序号从大到小" value="seqNo_desc" />
+              <el-option label="序号从小到大" value="seqNo_asc" />
+            </el-select>
+          </div>
+        </div>
+        <el-empty v-if="historyResult.messages.total === 0" description="暂无消息命中" />
+        <el-table v-else :data="historyResult.messages.items">
+          <el-table-column label="所属会话" min-width="220">
+            <template #default="{ row }">
+              <div class="highlight-cell" :title="row.sessionTitle" v-html="highlightSearchText(row.sessionTitle)" />
+            </template>
+          </el-table-column>
           <el-table-column prop="role" label="角色" width="100" />
           <el-table-column prop="messageType" label="消息类型" width="120" />
-          <el-table-column prop="snippet" label="内容摘要" min-width="320" show-overflow-tooltip />
+          <el-table-column label="内容摘要" min-width="320">
+            <template #default="{ row }">
+              <div class="highlight-cell" :title="row.snippet || ''" v-html="highlightSearchText(row.snippet)" />
+            </template>
+          </el-table-column>
           <el-table-column prop="createdAt" label="消息时间" min-width="180" />
           <el-table-column label="操作" width="140" fixed="right">
             <template #default="{ row }">
@@ -230,6 +383,18 @@ function resetHistorySearch() {
             </template>
           </el-table-column>
         </el-table>
+        <div class="pagination-bar">
+          <el-pagination
+            background
+            layout="total, sizes, prev, pager, next"
+            :current-page="historyResult.messages.pageNo"
+            :page-size="historyResult.messages.pageSize"
+            :page-sizes="[10, 20, 50]"
+            :total="historyResult.messages.total"
+            @current-change="handleMessagePageChange"
+            @size-change="handleMessagePageSizeChange"
+          />
+        </div>
       </div>
     </el-card>
 
@@ -302,9 +467,36 @@ function resetHistorySearch() {
   margin-top: 24px;
 }
 
+.result-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
 .result-block h3 {
-  margin: 0 0 12px;
+  margin: 0;
   font-size: 16px;
   font-weight: 600;
+}
+
+.highlight-cell {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.6;
+}
+
+:deep(mark.search-hit) {
+  padding: 0 2px;
+  border-radius: 4px;
+  background: rgba(250, 204, 21, 0.35);
+  color: #92400e;
+}
+
+.pagination-bar {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
 }
 </style>

@@ -11,7 +11,7 @@ const router = createRouter({
       path: '/dashboard',
       name: 'dashboard',
       component: () => import('@/views/dashboard/DashboardView.vue'),
-      meta: { title: '总控制台首页' }
+      meta: { title: '架构师总控台' }
     },
     {
       path: '/instances',

@@ -12,10 +12,11 @@ import {
   resizeSessionTerminal,
   sendSessionInput,
   stopSession,
+  updateSessionWorkspaceMeta,
   type CreateSessionPayload
 } from '@/api/session';
 import { createSessionSocket } from '@/api/ws';
-import type { AiSession, MessageRecord, SessionEventEnvelope, SessionTimelineItem } from '@/types/api';
+import type { AiSession, MessageRecord, SessionEventEnvelope, SessionTimelineItem, SessionWorkspaceMeta } from '@/types/api';
 import { normalizeMessageText, normalizeRawLogText, normalizeTerminalText } from '@/utils/text';
 
 export const useSessionStore = defineStore('sessions', () => {
@@ -107,6 +108,14 @@ export const useSessionStore = defineStore('sessions', () => {
     await resizeSessionTerminal(sessionId, { cols, rows });
   }
 
+  async function updateWorkspaceMeta(sessionId: string, payload: SessionWorkspaceMeta) {
+    await updateSessionWorkspaceMeta(sessionId, payload);
+    await loadList();
+    if (currentSession.value?.id === sessionId) {
+      await loadDetail(sessionId, { messageId: highlightedMessageId.value });
+    }
+  }
+
   async function ensureSocket() {
     if (socket.value) {
       return;
@@ -142,6 +151,14 @@ export const useSessionStore = defineStore('sessions', () => {
         typeof event.payload.exitReason === 'string' ? event.payload.exitReason : undefined,
         typeof event.payload.exitCode === 'number' ? event.payload.exitCode : undefined
       );
+    }
+
+    if (event.event === 'session.workspace.updated') {
+      syncWorkspaceSnapshot(event.sessionId, {
+        summary: typeof event.payload.summary === 'string' ? event.payload.summary : undefined,
+        tagsJson: typeof event.payload.tagsJson === 'string' ? event.payload.tagsJson : undefined,
+        extraJson: typeof event.payload.extraJson === 'string' ? event.payload.extraJson : undefined
+      });
     }
 
     if (currentSession.value?.id !== event.sessionId) {
@@ -196,6 +213,17 @@ export const useSessionStore = defineStore('sessions', () => {
         status,
         exitReason: exitReason ?? currentSession.value.exitReason,
         exitCode: exitCode ?? currentSession.value.exitCode
+      };
+    }
+  }
+
+  function syncWorkspaceSnapshot(sessionId: string, patch: Partial<AiSession>) {
+    items.value = items.value.map((item) => (item.id === sessionId ? { ...item, ...patch } : item));
+    runningItems.value = runningItems.value.map((item) => (item.id === sessionId ? { ...item, ...patch } : item));
+    if (currentSession.value?.id === sessionId) {
+      currentSession.value = {
+        ...currentSession.value,
+        ...patch
       };
     }
   }
@@ -350,6 +378,7 @@ export const useSessionStore = defineStore('sessions', () => {
     create,
     sendInput,
     sendRawInput,
+    updateWorkspaceMeta,
     resizeTerminal,
     stop,
     ensureSocket,

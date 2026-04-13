@@ -8,7 +8,7 @@ const router = useRouter();
 const runtimeStore = useRuntimeStore();
 
 const menuItems = [
-  { index: '/dashboard', label: '总控制台' },
+  { index: '/dashboard', label: '架构师总控台' },
   { index: '/instances', label: '应用实例' },
   { index: '/sessions', label: '会话管理' },
   { index: '/settings', label: '系统设置' }
@@ -31,7 +31,7 @@ function navigate(path: string) {
     <el-aside width="220px" class="app-sidebar">
       <div class="brand-block">
         <div class="brand-title">mutiAgent</div>
-        <div class="brand-subtitle">本地 AI 会话控制台</div>
+        <div class="brand-subtitle">架构师多 Agent 总控台</div>
       </div>
 
       <el-menu :default-active="activeMenu" class="side-menu" @select="navigate">

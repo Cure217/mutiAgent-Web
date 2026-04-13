@@ -7,6 +7,14 @@ export async function searchHistory(params?: {
   projectPath?: string;
   dateFrom?: string;
   dateTo?: string;
+  sessionPageNo?: number;
+  sessionPageSize?: number;
+  sessionSortBy?: string;
+  sessionSortDirection?: string;
+  messagePageNo?: number;
+  messagePageSize?: number;
+  messageSortBy?: string;
+  messageSortDirection?: string;
   sessionLimit?: number;
   messageLimit?: number;
 }) {

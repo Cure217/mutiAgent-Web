@@ -1,4 +1,4 @@
-import type { AiSession, MessageRecord, PageData, SessionTimelineItem } from '@/types/api';
+import type { AiSession, MessageRecord, PageData, SessionTimelineItem, SessionWorkspaceMeta } from '@/types/api';
 import { getHttpClient } from './http';
 
 export interface CreateSessionPayload {
@@ -8,6 +8,7 @@ export interface CreateSessionPayload {
   interactionMode?: string;
   initInput?: string;
   tags?: string[];
+  workspaceMeta?: SessionWorkspaceMeta;
 }
 
 export async function fetchSessions(params?: {
@@ -75,4 +76,17 @@ export async function fetchSessionTimeline(id: string, params?: { limit?: number
 export async function resizeSessionTerminal(id: string, payload: { cols: number; rows: number }) {
   const client = await getHttpClient();
   return client.post(`/sessions/${id}/terminal/resize`, payload);
+}
+
+export async function fetchSessionWorkspaceMeta(id: string) {
+  const client = await getHttpClient();
+  return client.get<never, SessionWorkspaceMeta>(`/sessions/${id}/workspace-meta`);
+}
+
+export async function updateSessionWorkspaceMeta(
+  id: string,
+  payload: SessionWorkspaceMeta
+) {
+  const client = await getHttpClient();
+  return client.post<never, SessionWorkspaceMeta>(`/sessions/${id}/workspace-meta`, payload);
 }

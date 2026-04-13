@@ -9,6 +9,7 @@ import type { InstancePayload } from '@/api/instance';
 
 const instanceStore = useInstanceStore();
 const configStore = useConfigStore();
+const DEFAULT_CODEX_YOLO_ARG = '--dangerously-bypass-approvals-and-sandbox';
 const keyword = ref('');
 const dialogVisible = ref(false);
 const editingId = ref<string | null>(null);
@@ -21,7 +22,7 @@ const form = reactive({
   launchMode: 'external',
   executablePath: '',
   launchCommand: 'codex.cmd',
-  argsText: '',
+  argsText: DEFAULT_CODEX_YOLO_ARG,
   workdir: 'D:\\Project\\ali\\260409',
   envText: 'TERM=xterm-256color',
   enabled: true,
@@ -35,6 +36,13 @@ const runtimeEnvHint = computed(() =>
     ? '这里表示 AI 命令实际运行在 WSL 中；即使宿主机是 Windows，也会走 WSL。'
     : '这里表示 AI 命令直接运行在 Windows 本机环境中。'
 );
+const isCodexLaunch = computed(() => {
+  const normalizedCommand = form.launchCommand.trim().toLowerCase();
+  return form.appType === 'codex'
+    || form.adapterType === 'codex-cli'
+    || normalizedCommand === 'codex'
+    || normalizedCommand === 'codex.cmd';
+});
 
 onMounted(async () => {
   await Promise.all([instanceStore.load(), configStore.load()]);
@@ -70,7 +78,7 @@ function openCreateDialog() {
     launchMode: 'external',
     executablePath: '',
     launchCommand: 'codex.cmd',
-    argsText: '',
+    argsText: DEFAULT_CODEX_YOLO_ARG,
     workdir: configStore.defaultProjectPath || 'D:\\Project\\ali\\260409',
     envText: 'TERM=xterm-256color',
     enabled: true,
@@ -315,7 +323,15 @@ function escapeHtml(value: string) {
             v-model="form.argsText"
             type="textarea"
             :rows="4"
-            placeholder="每行一个参数"
+            :placeholder="isCodexLaunch ? `每行一个参数&#10;默认建议：${DEFAULT_CODEX_YOLO_ARG}` : '每行一个参数'"
+          />
+        </el-form-item>
+        <el-form-item v-if="isCodexLaunch" label="参数说明">
+          <el-alert
+            title="Codex 默认以 yolo 模式启动；如果这里留空或未显式指定审批策略，后端也会自动补上 --dangerously-bypass-approvals-and-sandbox。"
+            type="warning"
+            :closable="false"
+            show-icon
           />
         </el-form-item>
         <el-form-item label="环境变量">
