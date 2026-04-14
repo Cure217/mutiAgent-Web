@@ -123,6 +123,18 @@ const sessionSummaryText = computed(() =>
   || sessionStore.currentSession?.summary?.trim()
   || '当前还没有沉淀出的任务摘要。'
 );
+const sharedContextModeLabel = computed(() => {
+  switch (sessionWorkspaceMeta.value.sharedContextMode) {
+    case 'all_active':
+      return '全部活跃窗口';
+    case 'related':
+      return '依赖 + 关键活跃窗口';
+    case 'dependencies':
+      return '仅依赖窗口';
+    default:
+      return null;
+  }
+});
 const workspaceSummaries = computed(() => finalizeWorkspaceSummaries(
   sessionStore.items
     .filter((item) => isCollaborativeWorkspaceSession(item))
@@ -266,6 +278,57 @@ const technicalItems = computed(() => [
   { label: '交互模式', value: interactionModeLabel.value },
   { label: '原始日志', value: sessionStore.currentSession?.rawLogPath ?? '-' }
 ]);
+const taskPacketSummarySections = computed(() => {
+  const sharedPolicyItems = [
+    sharedContextModeLabel.value ? `共享范围：${sharedContextModeLabel.value}` : null,
+    sessionWorkspaceMeta.value.sharedContextLimit != null ? `窗口上限：${sessionWorkspaceMeta.value.sharedContextLimit}` : null
+  ].filter((item): item is string => Boolean(item));
+
+  return [
+    {
+      title: '范围约束',
+      items: splitSummaryLines(sessionWorkspaceMeta.value.taskScope),
+      emptyText: '当前未记录范围约束'
+    },
+    {
+      title: '验收标准',
+      items: splitSummaryLines(sessionWorkspaceMeta.value.acceptanceCriteria),
+      emptyText: '当前未记录验收标准'
+    },
+    {
+      title: '交付要求',
+      items: splitSummaryLines(sessionWorkspaceMeta.value.deliverableSpec),
+      emptyText: '当前未记录交付要求'
+    },
+    {
+      title: '共享策略',
+      items: sharedPolicyItems,
+      emptyText: '当前未记录共享策略'
+    }
+  ];
+});
+const hasTaskPacketSummary = computed(() =>
+  taskPacketSummarySections.value.some((section) => section.items.length > 0)
+);
+const sessionSharedContextRefs = computed(() =>
+  (sessionWorkspaceMeta.value.sharedContextRefs ?? [])
+    .filter((item) => item && typeof item === 'object' && (item.sessionId || item.title))
+    .map((item) => {
+      const linkedWorkspace = item.sessionId
+        ? workspaceSummaries.value.find((workspace) => workspace.id === item.sessionId) ?? null
+        : null;
+      const label = `${item.roleLabel?.trim() || linkedWorkspace?.role.label || item.roleKey?.trim() || '未标注角色'} · ${item.title?.trim() || linkedWorkspace?.title || (item.sessionId ? `会话 ${item.sessionId.slice(0, 8)}` : '未知窗口')}`;
+      return {
+        sessionId: item.sessionId || linkedWorkspace?.id || '',
+        label,
+        reason: item.includedReason?.trim() || '共享上下文来源',
+        status: item.coordinationLabel?.trim() || linkedWorkspace?.coordinationLabel || item.coordinationState?.trim() || '状态未知',
+        progress: item.progressHint?.trim() || linkedWorkspace?.progressHint || '暂无最近进展',
+        lastActiveText: item.lastActiveText?.trim() || linkedWorkspace?.lastActiveText || '暂无更新',
+        actionable: Boolean(linkedWorkspace)
+      };
+    })
+);
 
 const composerGuidance = computed(() => {
   const coordinationStatus = sessionCoordinationState.value;
@@ -457,6 +520,13 @@ const currentSuggestedAction = computed(() => {
     secondaryAction: 'messages' as SuggestedActionKey
   };
 });
+
+function splitSummaryLines(value?: string | null) {
+  return (value ?? '')
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
 
 function restoreLayoutPreference() {
   const raw = window.localStorage.getItem(SESSION_LAYOUT_STORAGE_KEY);
@@ -956,6 +1026,44 @@ function navigateBack() {
                 <el-button size="small" @click="navigateBack">回总控台查看相关窗口</el-button>
               </div>
             </div>
+            <div v-if="hasTaskPacketSummary" class="task-packet-summary">
+              <div class="task-packet-summary__title">任务包摘要</div>
+              <div class="task-packet-summary__desc">这里保留架构师派单时写下的边界、验收和交付要求，方便当前窗口续跑。</div>
+              <div class="task-packet-summary__grid">
+                <section v-for="section in taskPacketSummarySections" :key="section.title" class="task-packet-summary__section">
+                  <div class="task-packet-summary__section-title">{{ section.title }}</div>
+                  <div v-if="!section.items.length" class="task-packet-summary__empty">{{ section.emptyText }}</div>
+                  <div v-else class="task-packet-summary__list">
+                    <div v-for="(item, index) in section.items" :key="`${section.title}-${index}`" class="task-packet-summary__item">
+                      <span class="task-packet-summary__index">{{ index + 1 }}</span>
+                      <span>{{ item }}</span>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            </div>
+            <div v-if="sessionSharedContextRefs.length" class="shared-context-ref-block">
+              <div class="shared-context-ref-block__title">共享上下文来源</div>
+              <div class="shared-context-ref-block__desc">这些窗口的阶段进展曾被带入当前任务包，方便回溯当时为什么会把它们纳入上下文。</div>
+              <div class="shared-context-ref-grid">
+                <button
+                  v-for="item in sessionSharedContextRefs"
+                  :key="item.sessionId || item.label"
+                  type="button"
+                  class="shared-context-ref-card"
+                  :class="{ 'is-action': item.actionable }"
+                  :disabled="!item.actionable"
+                  @click="item.actionable ? openRelatedWorkspace(item.sessionId) : undefined"
+                >
+                  <div class="shared-context-ref-card__head">
+                    <strong>{{ item.label }}</strong>
+                    <span>{{ item.status }}</span>
+                  </div>
+                  <div class="shared-context-ref-card__meta">{{ item.reason }} · 最近活跃：{{ item.lastActiveText }}</div>
+                  <div class="shared-context-ref-card__desc">{{ item.progress }}</div>
+                </button>
+              </div>
+            </div>
             <div class="context-grid">
               <div class="meta-card">
                 <div class="meta-label">项目目录</div>
@@ -967,11 +1075,11 @@ function navigateBack() {
               </div>
               <div class="meta-card">
                 <div class="meta-label">共享上下文</div>
-                <div class="meta-value">{{ sessionWorkspaceMeta.sharedContextSummary || '暂无共享上下文摘要' }}</div>
+                <div class="meta-value context-meta-value">{{ sessionWorkspaceMeta.sharedContextSummary || '暂无共享上下文摘要' }}</div>
               </div>
               <div class="meta-card">
                 <div class="meta-label">阻塞原因</div>
-                <div class="meta-value">{{ inferredBlockingReason || '当前未识别到明确阻塞' }}</div>
+                <div class="meta-value context-meta-value">{{ inferredBlockingReason || '当前未识别到明确阻塞' }}</div>
               </div>
             </div>
           </div>
@@ -1304,6 +1412,170 @@ function navigateBack() {
   margin-top: 12px;
 }
 
+.task-packet-summary {
+  padding: 14px;
+  border-radius: 16px;
+  background: rgba(37, 99, 235, 0.06);
+  border: 1px solid rgba(37, 99, 235, 0.12);
+}
+
+.task-packet-summary__title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.task-packet-summary__desc {
+  margin-top: 6px;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.task-packet-summary__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.task-packet-summary__section {
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.task-packet-summary__section-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.task-packet-summary__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.task-packet-summary__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.7;
+  word-break: break-word;
+}
+
+.task-packet-summary__index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.12);
+  color: #1d4ed8;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.task-packet-summary__empty {
+  margin-top: 10px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.shared-context-ref-block {
+  padding: 14px;
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.04);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.shared-context-ref-block__title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.shared-context-ref-block__desc {
+  margin-top: 6px;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.shared-context-ref-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.shared-context-ref-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(255, 255, 255, 0.9);
+  color: #334155;
+  text-align: left;
+}
+
+.shared-context-ref-card.is-action {
+  cursor: pointer;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+}
+
+.shared-context-ref-card.is-action:hover {
+  transform: translateY(-1px);
+  background: rgba(37, 99, 235, 0.06);
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.12);
+}
+
+.shared-context-ref-card:disabled {
+  opacity: 1;
+}
+
+.shared-context-ref-card__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  color: #0f172a;
+}
+
+.shared-context-ref-card__head strong {
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.shared-context-ref-card__head span {
+  flex-shrink: 0;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.shared-context-ref-card__meta {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.shared-context-ref-card__desc {
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .context-label {
   font-size: 12px;
   color: #64748b;
@@ -1322,6 +1594,11 @@ function navigateBack() {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
+}
+
+.context-meta-value {
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .composer-card {
@@ -1448,6 +1725,8 @@ function navigateBack() {
   .task-cockpit,
   .session-main-grid,
   .relation-grid,
+  .task-packet-summary__grid,
+  .shared-context-ref-grid,
   .context-grid,
   .technical-grid {
     grid-template-columns: minmax(0, 1fr);

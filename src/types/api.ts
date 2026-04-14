@@ -93,6 +93,19 @@ export interface AiSession {
   updatedAt: string;
 }
 
+export interface SessionSharedContextRef {
+  sessionId?: string | null;
+  roleKey?: string | null;
+  roleLabel?: string | null;
+  title?: string | null;
+  coordinationState?: string | null;
+  coordinationLabel?: string | null;
+  progressHint?: string | null;
+  includedReason?: string | null;
+  lastActiveAt?: string | null;
+  lastActiveText?: string | null;
+}
+
 export interface SessionWorkspaceMeta {
   workspaceKind?: string | null;
   role?: string | null;
@@ -101,6 +114,12 @@ export interface SessionWorkspaceMeta {
   blockedReason?: string | null;
   dependencySessionIds?: string[] | null;
   sharedContextSummary?: string | null;
+  sharedContextRefs?: SessionSharedContextRef[] | null;
+  taskScope?: string | null;
+  acceptanceCriteria?: string | null;
+  deliverableSpec?: string | null;
+  sharedContextMode?: string | null;
+  sharedContextLimit?: number | null;
   updatedAt?: string | null;
 }
 

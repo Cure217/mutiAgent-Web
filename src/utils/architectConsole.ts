@@ -1,8 +1,9 @@
-import type { AiSession, AppInstance, SessionWorkspaceMeta } from '@/types/api';
+import type { AiSession, AppInstance, SessionSharedContextRef, SessionWorkspaceMeta } from '@/types/api';
 
 export type WorkspaceRoleKey = 'general' | 'developer' | 'frontend' | 'tester' | 'product' | 'document';
 export type CoordinationTone = 'info' | 'primary' | 'warning' | 'success' | 'danger';
 export type CoordinationState = 'assigned' | 'running' | 'blocked' | 'completed' | 'closed';
+export type SharedContextMode = 'dependencies' | 'related' | 'all_active';
 
 export interface WorkspaceRoleDefinition {
   key: WorkspaceRoleKey;
@@ -41,7 +42,31 @@ export interface DispatchPromptOptions {
   projectPath?: string;
   dependencyLabels?: string[];
   collaborationSnapshot?: string;
+  collaborationRefs?: SessionSharedContextRef[];
   targetSessionTitle?: string;
+  scopeHint?: string;
+  acceptance?: string;
+  deliverable?: string;
+  collaborationItems?: AgentWorkspaceSummary[];
+  collaborationMode?: SharedContextMode;
+}
+
+export interface CollaborationSnapshotOptions {
+  currentSessionId?: string | null;
+  dependencyIds?: string[];
+  pinnedSessionIds?: string[];
+  mode?: SharedContextMode;
+  limit?: number;
+}
+
+export interface DispatchTaskPacketSection {
+  title: string;
+  items: string[];
+  emptyText?: string;
+}
+
+export interface DispatchTaskPacket {
+  sections: DispatchTaskPacketSection[];
 }
 
 export type BlockedCategoryKey =
@@ -211,25 +236,45 @@ function resolveCoordination(session: AiSession, tags: string[], workspaceMeta: 
   if (session.status === 'STOPPING') {
     return { state: 'closed' as const, label: '关闭中', tone: 'warning' as const };
   }
-  if (session.status === 'COMPLETED' && explicitState?.state !== 'completed') {
-    return { state: 'closed' as const, label: '已关闭', tone: 'info' as const };
-  }
-  if (explicitState) {
-    return explicitState;
-  }
   switch (session.status) {
     case 'STARTING':
+      if (explicitState?.state === 'blocked') {
+        return explicitState;
+      }
       return { state: 'assigned' as const, label: '启动中', tone: 'warning' as const };
     case 'RUNNING':
+      if (explicitState?.state === 'blocked' || explicitState?.state === 'completed' || explicitState?.state === 'closed') {
+        return explicitState;
+      }
       return { state: 'running' as const, label: '执行中', tone: 'primary' as const };
     case 'COMPLETED':
+      if (explicitState?.state === 'blocked' || explicitState?.state === 'completed' || explicitState?.state === 'closed') {
+        return explicitState;
+      }
+      if ((session.exitReason || '').includes('手动停止') || (session.exitReason || '').includes('强制停止')) {
+        return { state: 'closed' as const, label: '已关闭', tone: 'info' as const };
+      }
       return { state: 'completed' as const, label: '已完成', tone: 'success' as const };
     default:
-      return { state: 'assigned' as const, label: '待处理', tone: 'info' as const };
+      return explicitState ?? { state: 'assigned' as const, label: '待处理', tone: 'info' as const };
   }
 }
 
 function buildProgressHint(session: AiSession, workspaceMeta: SessionWorkspaceMeta) {
+  if (session.status === 'FAILED') {
+    return workspaceMeta.blockedReason?.trim()
+      || session.exitReason?.trim()
+      || workspaceMeta.progressSummary?.trim()
+      || '子窗口执行失败，等待阻塞处理';
+  }
+  if (session.status === 'STOPPING') {
+    return '子窗口正在关闭，等待最终状态回写';
+  }
+  if (session.status === 'STARTING') {
+    return workspaceMeta.progressSummary?.trim()
+      || session.summary?.trim()
+      || '子窗口启动中，等待进入执行状态';
+  }
   return workspaceMeta.progressSummary?.trim()
     || workspaceMeta.blockedReason?.trim()
     || session.summary?.trim()
@@ -327,44 +372,217 @@ export function buildWorkspaceTags(roleKey: WorkspaceRoleKey, dependencyIds: str
   ];
 }
 
+function clampCollaborationLimit(limit?: number) {
+  return Math.min(Math.max(limit ?? 4, 1), 8);
+}
+
+function uniqueWorkspaceItems(items: AgentWorkspaceSummary[]) {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    if (seen.has(item.id)) {
+      return false;
+    }
+    seen.add(item.id);
+    return true;
+  });
+}
+
+function buildWorkspaceSnapshotLine(item: AgentWorkspaceSummary, index: number) {
+  const dependencyText = item.dependencyLabels.length ? item.dependencyLabels.join('、') : '无';
+  return `${index + 1}. [${item.role.label}] ${item.title}｜状态：${item.coordinationLabel}｜最近进展：${item.progressHint}｜依赖：${dependencyText}｜最后活跃：${item.lastActiveText}`;
+}
+
+function resolveSharedContextIncludedReason(item: AgentWorkspaceSummary, dependencyIds: Set<string>, pinnedIds: Set<string>) {
+  if (pinnedIds.has(item.id)) {
+    return '手动固定来源';
+  }
+  if (dependencyIds.has(item.id)) {
+    return '显式依赖窗口';
+  }
+  switch (item.coordinationState) {
+    case 'blocked':
+      return '关键阻塞窗口';
+    case 'running':
+      return '执行中窗口';
+    case 'assigned':
+      return '待开始窗口';
+    case 'completed':
+      return '已完成窗口';
+    case 'closed':
+      return '关闭后参考窗口';
+    default:
+      return '共享上下文来源';
+  }
+}
+
+function buildSharedContextReference(
+  item: AgentWorkspaceSummary,
+  dependencyIds: Set<string>,
+  pinnedIds: Set<string>
+): SessionSharedContextRef {
+  return {
+    sessionId: item.id,
+    roleKey: item.role.key,
+    roleLabel: item.role.label,
+    title: item.title,
+    coordinationState: item.coordinationState,
+    coordinationLabel: item.coordinationLabel,
+    progressHint: item.progressHint,
+    includedReason: resolveSharedContextIncludedReason(item, dependencyIds, pinnedIds),
+    lastActiveAt: item.lastActiveAt ?? null,
+    lastActiveText: item.lastActiveText
+  };
+}
+
+function buildSharedContextSnapshotLine(ref: SessionSharedContextRef, index: number) {
+  const roleLabel = ref.roleLabel?.trim() || ref.roleKey?.trim() || '未标注角色';
+  const title = ref.title?.trim() || ref.sessionId?.trim() || '未知窗口';
+  const coordinationLabel = ref.coordinationLabel?.trim() || ref.coordinationState?.trim() || '未标注状态';
+  const includedReason = ref.includedReason?.trim() || '共享上下文来源';
+  const progressHint = ref.progressHint?.trim() || '暂无最近进展';
+  const lastActiveText = ref.lastActiveText?.trim() || '暂无更新';
+  return `${index + 1}. [${roleLabel}] ${title}｜纳入原因：${includedReason}｜状态：${coordinationLabel}｜最近进展：${progressHint}｜最后活跃：${lastActiveText}`;
+}
+
+export function buildSharedContextReferences(
+  items: AgentWorkspaceSummary[],
+  options: CollaborationSnapshotOptions = {}
+) {
+  const relevantItems = collectCollaborationItems(items, options);
+  const dependencyIds = new Set((options.dependencyIds ?? []).filter(Boolean));
+  const pinnedIds = new Set((options.pinnedSessionIds ?? []).filter(Boolean));
+  return relevantItems.map((item) => buildSharedContextReference(item, dependencyIds, pinnedIds));
+}
+
+export function collectCollaborationItems(
+  items: AgentWorkspaceSummary[],
+  options: CollaborationSnapshotOptions = {}
+) {
+  const mode = options.mode ?? 'dependencies';
+  const limit = clampCollaborationLimit(options.limit);
+  const normalizedDependencyIds = new Set((options.dependencyIds ?? []).filter(Boolean));
+  const normalizedPinnedIds = new Set((options.pinnedSessionIds ?? []).filter(Boolean));
+  const filtered = items.filter((item) => item.id !== options.currentSessionId);
+  const dependencyItems = filtered.filter((item) => normalizedDependencyIds.has(item.id));
+  const pinnedItems = filtered.filter((item) => normalizedPinnedIds.has(item.id));
+  const activeItems = filtered.filter((item) => item.coordinationState !== 'closed');
+
+  if (mode === 'dependencies') {
+    return uniqueWorkspaceItems([
+      ...pinnedItems,
+      ...dependencyItems
+    ]).slice(0, limit);
+  }
+
+  if (mode === 'related') {
+    return uniqueWorkspaceItems([
+      ...pinnedItems,
+      ...dependencyItems,
+      ...activeItems.filter((item) => item.coordinationState === 'blocked'),
+      ...activeItems.filter((item) => item.coordinationState === 'running'),
+      ...activeItems.filter((item) => item.coordinationState === 'assigned'),
+      ...activeItems.filter((item) => item.coordinationState === 'completed')
+    ]).slice(0, limit);
+  }
+
+  return uniqueWorkspaceItems([
+    ...pinnedItems,
+    ...dependencyItems,
+    ...activeItems,
+    ...filtered.filter((item) => item.coordinationState === 'closed')
+  ]).slice(0, limit);
+}
+
 export function buildCollaborationSnapshot(
   items: AgentWorkspaceSummary[],
-  currentSessionId?: string | null,
-  dependencyIds: string[] = []
+  options: CollaborationSnapshotOptions = {}
 ) {
-  const normalizedDependencyIds = new Set(dependencyIds.filter(Boolean));
-  const filtered = items.filter((item) => item.id !== currentSessionId);
-  const relevantItems = normalizedDependencyIds.size > 0
-    ? filtered.filter((item) => normalizedDependencyIds.has(item.id))
-    : filtered;
+  const relevantItems = buildSharedContextReferences(items, options);
 
   if (!relevantItems.length) {
+    if ((options.mode ?? 'dependencies') === 'dependencies') {
+      return '当前未选择依赖窗口，因此不会自动注入额外共享上下文；如需同步其他子窗口进展，请先选择依赖窗口。';
+    }
     return '当前暂无其他子窗口需要同步，你可以专注处理当前任务，但仍需及时汇报阻塞与完成状态。';
   }
 
   return relevantItems
-    .slice(0, 8)
-    .map((item, index) => {
-      const dependencyText = item.dependencyLabels.length ? item.dependencyLabels.join('、') : '无';
-      return `${index + 1}. [${item.role.label}] ${item.title}｜状态：${item.coordinationLabel}｜最近进展：${item.progressHint}｜依赖：${dependencyText}｜最后活跃：${item.lastActiveText}`;
-    })
+    .map((item, index) => buildSharedContextSnapshotLine(item, index))
     .join('\n');
 }
 
+export function buildDispatchTaskPacket(options: DispatchPromptOptions): DispatchTaskPacket {
+  const sharedContextItems = options.collaborationRefs?.length
+    ? options.collaborationRefs.map((item) => {
+        const roleLabel = item.roleLabel?.trim() || item.roleKey?.trim() || '未标注角色';
+        const title = item.title?.trim() || item.sessionId?.trim() || '未知窗口';
+        const reason = item.includedReason?.trim() || '共享上下文来源';
+        const coordinationLabel = item.coordinationLabel?.trim() || item.coordinationState?.trim() || '未标注状态';
+        return `引用窗口：${roleLabel} · ${title}｜纳入原因：${reason}｜当前状态：${coordinationLabel}`;
+      })
+    : (options.collaborationItems ?? []).map((item, index) => buildWorkspaceSnapshotLine(item, index));
+  const dependencyItems = options.dependencyLabels?.length
+    ? options.dependencyLabels.map((item) => `依赖窗口：${item}`)
+    : ['当前没有显式依赖窗口'];
+  const sharedContextModeLabel = options.collaborationMode === 'all_active'
+    ? '全部活跃窗口'
+    : options.collaborationMode === 'related'
+      ? '依赖 + 关键活跃窗口'
+      : '仅依赖窗口';
+
+  return {
+    sections: [
+      {
+        title: '任务目标',
+        items: [
+          `目标角色：${options.role.label}`,
+          options.targetSessionTitle ? `目标子窗口：${options.targetSessionTitle}` : '目标子窗口：新建子窗口',
+          options.title ? `子任务标题：${options.title}` : '子任务标题：待命任务',
+          options.instruction?.trim() || '请先同步当前状态，再等待进一步指令。'
+        ]
+      },
+      {
+        title: '边界与约束',
+        items: [
+          options.projectPath ? `项目目录：${options.projectPath}` : '项目目录：沿用当前工作目录',
+          options.scopeHint?.trim() || '保持最小修改，只处理当前任务包范围内的内容，不顺手重构无关模块。'
+        ]
+      },
+      {
+        title: '依赖与共享上下文',
+        items: [
+          ...dependencyItems,
+          `共享上下文范围：${sharedContextModeLabel}`,
+          ...sharedContextItems.map((item, index) => buildWorkspaceSnapshotLine(item, index))
+        ],
+        emptyText: '当前不注入额外共享上下文'
+      },
+      {
+        title: '验收与交付',
+        items: [
+          options.acceptance?.trim() || '完成后先给出计划、当前进度、阻塞点和下一步动作，必要时补最小验证结果。',
+          options.deliverable?.trim() || '最终汇报需包含任务摘要、关键修改、验证结果和剩余风险。'
+        ]
+      }
+    ]
+  };
+}
+
 export function buildDispatchPrompt(options: DispatchPromptOptions) {
-  const dependencyText = options.dependencyLabels?.length
-    ? options.dependencyLabels.join('、')
-    : '当前没有显式依赖，但需要持续感知其他 Agent 的关键进度';
+  const packet = buildDispatchTaskPacket(options);
+  const packetText = packet.sections
+    .map((section) => {
+      if (!section.items.length) {
+        return `【${section.title}】\n${section.emptyText || '无'}`;
+      }
+      return `【${section.title}】\n${section.items.map((item, index) => `${index + 1}. ${item}`).join('\n')}`;
+    })
+    .join('\n\n');
 
   return [
     '你现在是多 Agent 协作工作台中的一个子窗口，由“架构师主窗口”统一调度。',
-    `当前角色：${options.role.label}。职责边界：${options.role.description}。`,
-    options.targetSessionTitle ? `目标子窗口：${options.targetSessionTitle}` : '',
-    options.title ? `当前子任务：${options.title}` : '',
-    options.projectPath ? `项目路径：${options.projectPath}` : '',
-    `上下游依赖：${dependencyText}。`,
-    '执行要求：先确认你理解的目标与边界，再给出计划、当前进度、阻塞点和下一步动作。',
-    options.instruction ? `本次架构师指令：\n${options.instruction.trim()}` : '',
+    `当前角色职责：${options.role.description}。`,
+    packetText,
     options.collaborationSnapshot ? `当前协作快照：\n${options.collaborationSnapshot}` : ''
   ]
     .filter(Boolean)
