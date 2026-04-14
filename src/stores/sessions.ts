@@ -102,6 +102,9 @@ export const useSessionStore = defineStore('sessions', () => {
 
   async function stop(sessionId: string) {
     await stopSession(sessionId);
+    if (!socketConnected.value) {
+      scheduleStatusRefresh(sessionId);
+    }
   }
 
   async function resizeTerminal(sessionId: string, cols: number, rows: number) {
@@ -204,9 +207,26 @@ export const useSessionStore = defineStore('sessions', () => {
 
   function syncSessionStatus(sessionId: string, status: string, exitReason?: string, exitCode?: number) {
     items.value = items.value.map((item) => (item.id === sessionId ? { ...item, status, exitReason, exitCode } : item));
-    runningItems.value = runningItems.value.map((item) =>
-      item.id === sessionId ? { ...item, status, exitReason, exitCode } : item
-    );
+    const nextItem = items.value.find((item) => item.id === sessionId)
+      ?? (currentSession.value?.id === sessionId
+        ? {
+            ...currentSession.value,
+            status,
+            exitReason: exitReason ?? currentSession.value.exitReason,
+            exitCode: exitCode ?? currentSession.value.exitCode
+          }
+        : null);
+    if (isActiveSessionStatus(status)) {
+      if (runningItems.value.some((item) => item.id === sessionId)) {
+        runningItems.value = runningItems.value.map((item) =>
+          item.id === sessionId ? { ...item, status, exitReason, exitCode } : item
+        );
+      } else if (nextItem) {
+        runningItems.value = [nextItem, ...runningItems.value.filter((item) => item.id !== sessionId)];
+      }
+    } else {
+      runningItems.value = runningItems.value.filter((item) => item.id !== sessionId);
+    }
     if (currentSession.value?.id === sessionId) {
       currentSession.value = {
         ...currentSession.value,
@@ -279,13 +299,7 @@ export const useSessionStore = defineStore('sessions', () => {
       return;
     }
 
-    const optimisticIndex = messages.value.findIndex(
-      (item) =>
-        item.pending
-        && item.role === message.role
-        && item.messageType === message.messageType
-        && item.contentText === message.contentText
-    );
+    const optimisticIndex = findMatchingOptimisticMessageIndex(message);
     if (optimisticIndex >= 0) {
       messages.value[optimisticIndex] = {
         ...messages.value[optimisticIndex],
@@ -332,6 +346,28 @@ export const useSessionStore = defineStore('sessions', () => {
     };
   }
 
+  function findMatchingOptimisticMessageIndex(message: MessageRecord) {
+    let latestFailedIndex = -1;
+    for (let index = messages.value.length - 1; index >= 0; index -= 1) {
+      const item = messages.value[index];
+      const isSameLogicalMessage = item.id.startsWith('local-')
+        && item.role === message.role
+        && item.messageType === message.messageType
+        && item.contentText === message.contentText;
+
+      if (!isSameLogicalMessage) {
+        continue;
+      }
+      if (item.pending) {
+        return index;
+      }
+      if (item.failed && latestFailedIndex < 0) {
+        latestFailedIndex = index;
+      }
+    }
+    return latestFailedIndex;
+  }
+
   function sortMessages() {
     messages.value = [...messages.value].sort((left, right) => {
       if ((left.seqNo ?? 0) !== (right.seqNo ?? 0)) {
@@ -359,6 +395,26 @@ export const useSessionStore = defineStore('sessions', () => {
       } catch {
       }
     }, 800);
+  }
+
+  function scheduleStatusRefresh(sessionId: string) {
+    if (refreshTimer !== null) {
+      window.clearTimeout(refreshTimer);
+    }
+    refreshTimer = window.setTimeout(async () => {
+      refreshTimer = null;
+      try {
+        await loadList();
+        if (currentSession.value?.id === sessionId) {
+          await loadDetail(sessionId, { messageId: highlightedMessageId.value });
+        }
+      } catch {
+      }
+    }, 1800);
+  }
+
+  function isActiveSessionStatus(status?: string | null) {
+    return ['STARTING', 'RUNNING', 'STOPPING'].includes((status || '').toUpperCase());
   }
 
   return {

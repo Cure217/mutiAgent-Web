@@ -177,6 +177,14 @@ export function normalizeRawLogText(rawText: string) {
     return '';
   }
 
+  const looksLikeLegacyLog = rawText
+    .split(/\r?\n/, 8)
+    .some((line) => /^\[[^\]\r\n]+\]\[(stdout|stderr)\]\s?/i.test(line));
+
+  if (!looksLikeLegacyLog) {
+    return normalizeTerminalText(rawText).replace(/\u0000/g, '');
+  }
+
   const normalized = rawText
     .split(/\r?\n/)
     .map((line) => normalizeTerminalText(line.replace(/^\[[^\]]+\]\[(stdout|stderr)\]\s?/i, '')))

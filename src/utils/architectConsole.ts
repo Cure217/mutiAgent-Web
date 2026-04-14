@@ -44,6 +44,28 @@ export interface DispatchPromptOptions {
   targetSessionTitle?: string;
 }
 
+export type BlockedCategoryKey =
+  | 'requirement'
+  | 'dependency'
+  | 'environment'
+  | 'implementation'
+  | 'verification'
+  | 'frontend'
+  | 'documentation'
+  | 'unknown';
+
+export interface BlockedDiagnosis {
+  key: BlockedCategoryKey;
+  label: string;
+  tone: 'info' | 'warning' | 'danger' | 'success';
+  description: string;
+  templateKey: 'continue' | 'request_info' | 'unblock' | 'document';
+  targetRoleKey: WorkspaceRoleKey;
+  playbook: string[];
+  draftGoal: string;
+  draftChecklist: string[];
+}
+
 export const WORKSPACE_ROLES: WorkspaceRoleDefinition[] = [
   {
     key: 'developer',
@@ -223,6 +245,12 @@ function buildWorkspaceKindLabel(tags: string[], workspaceMeta: SessionWorkspace
   return '普通会话';
 }
 
+export function isCollaborativeWorkspaceSession(session: AiSession) {
+  const tags = safeParseTags(session.tagsJson);
+  const workspaceMeta = safeParseWorkspaceMeta(session.extraJson);
+  return (workspaceMeta.workspaceKind || '').toLowerCase() === 'child' || tags.includes('workspace:child');
+}
+
 export function buildWorkspaceSummary(session: AiSession, instances: AppInstance[]) {
   const tags = safeParseTags(session.tagsJson);
   const workspaceMeta = safeParseWorkspaceMeta(session.extraJson);
@@ -345,4 +373,188 @@ export function buildDispatchPrompt(options: DispatchPromptOptions) {
 
 export function getWorkspaceRole(roleKey: WorkspaceRoleKey) {
   return WORKSPACE_ROLE_MAP.get(roleKey) ?? WORKSPACE_ROLE_MAP.get('general')!;
+}
+
+export function diagnoseBlockedWorkspace(options: {
+  blockedReason?: string | null;
+  progressHint?: string | null;
+  roleKey?: WorkspaceRoleKey | null;
+  hasDependencies?: boolean;
+}): BlockedDiagnosis {
+  const blockedReason = `${options.blockedReason || ''} ${options.progressHint || ''}`.toLowerCase();
+  const roleKey = options.roleKey || 'general';
+
+  if (/wsl|环境|权限|安装|依赖包|端口|port|路径|path|node|npm|pnpm|python|pip|sdk|登录|token|密钥/.test(blockedReason)) {
+    return {
+      key: 'environment',
+      label: '环境 / 权限阻塞',
+      tone: 'danger',
+      description: '更像运行环境、依赖安装、权限或本地执行条件问题，通常先修环境比继续扩派任务更有效。',
+      templateKey: 'unblock',
+      targetRoleKey: 'developer',
+      playbook: [
+        '先确认是否是实例环境、依赖安装、权限或端口占用导致无法继续执行。',
+        '判断是原地修复环境，还是改派到其他可运行实例更省时间。',
+        '如果会影响其他子窗口，先同步“何时恢复可执行”。'
+      ],
+      draftGoal: '优先解除运行环境或权限问题，让当前任务重新回到可执行状态。',
+      draftChecklist: [
+        '判断问题属于缺依赖、权限不足、环境未初始化还是实例配置不一致',
+        '给出最短修复路径，并说明是否需要切换实例或补充环境准备',
+        '评估会影响哪些上下游子窗口，以及是否需要先同步状态'
+      ]
+    };
+  }
+
+  if (/需求|优先级|确认|口径|方案|范围|边界|产品|为什么|目标/.test(blockedReason)) {
+    return {
+      key: 'requirement',
+      label: '需求待确认',
+      tone: 'warning',
+      description: '当前阻塞更像信息缺口或需求口径未定，先补齐输入比继续编码更重要。',
+      templateKey: 'request_info',
+      targetRoleKey: 'product',
+      playbook: [
+        '优先确认缺失的目标、范围或验收口径，避免错误推进。',
+        '把必须确认的问题列成清单，而不是泛泛说“需求不清”。',
+        '给出一版默认推进方案，便于架构师快速拍板。'
+      ],
+      draftGoal: '补齐阻塞当前执行所必需的需求信息，并形成可继续推进的统一口径。',
+      draftChecklist: [
+        '列出阻塞执行的关键待确认问题，避免模糊表述',
+        '说明每个问题若不确认会影响什么决策',
+        '给出默认假设方案，方便架构师快速选择'
+      ]
+    };
+  }
+
+  if (/依赖|上游|接口|联调|返回|数据源|schema|等待|同步|后端未给|还没好/.test(blockedReason) || options.hasDependencies) {
+    return {
+      key: 'dependency',
+      label: '上游依赖等待',
+      tone: 'warning',
+      description: '当前更像被上游结果卡住，需要先同步依赖、确认替代输入或调整执行顺序。',
+      templateKey: 'unblock',
+      targetRoleKey: roleKey === 'product' ? 'developer' : roleKey,
+      playbook: [
+        '先确认上游依赖是否已有部分结果可复用，不要默认完全等待。',
+        '如果上游继续阻塞，评估是否能用 mock、占位方案或拆分子任务先推进。',
+        '同步受影响的下游窗口，避免多处重复等待。'
+      ],
+      draftGoal: '优先解除上游依赖等待，明确可复用结果、替代输入和下游同步顺序。',
+      draftChecklist: [
+        '确认当前依赖是否已有阶段性结果、接口约定或可替代输入',
+        '如果依赖暂时无法完成，给出不阻塞主链路的降级推进方案',
+        '明确哪些下游窗口需要同步，以及同步的优先级'
+      ]
+    };
+  }
+
+  if (/测试|复现|验证|回归|冒烟|case|断言|结果不一致/.test(blockedReason)) {
+    return {
+      key: 'verification',
+      label: '验证 / 测试阻塞',
+      tone: 'warning',
+      description: '当前更像复现、验证口径或测试数据不足导致的阻塞，适合先转给测试视角收敛问题。',
+      templateKey: 'unblock',
+      targetRoleKey: 'tester',
+      playbook: [
+        '先确认问题能否稳定复现，避免围绕偶发现象反复派单。',
+        '补齐测试步骤、环境和预期结果，再决定是否回退给开发。',
+        '如果复现不稳定，优先沉淀最小复现路径。'
+      ],
+      draftGoal: '先让问题可复现、可验证，再决定是回归、补测试还是转回开发修复。',
+      draftChecklist: [
+        '确认最小复现步骤、测试环境和预期结果',
+        '说明当前无法验证的具体缺口：数据、环境、步骤还是口径',
+        '给出下一步是继续测试、补输入还是回交开发的判断'
+      ]
+    };
+  }
+
+  if (/前端|页面|交互|样式|布局|ui|ux|组件|视觉/.test(blockedReason)) {
+    return {
+      key: 'frontend',
+      label: '前端 / 交互阻塞',
+      tone: 'warning',
+      description: '当前更像页面结构、交互细节或样式问题，适合转给前端角色集中处理。',
+      templateKey: 'continue',
+      targetRoleKey: 'frontend',
+      playbook: [
+        '先明确是布局冲突、交互路径不顺，还是视觉反馈缺失。',
+        '尽量给出受影响区域和期望行为，而不是笼统说“页面不对”。',
+        '如果涉及上下游依赖，先说明哪些接口或状态未就绪。'
+      ],
+      draftGoal: '优先澄清具体的前端交互问题，并推进一个最小可验证的页面闭环。',
+      draftChecklist: [
+        '指出受影响页面、组件或交互路径',
+        '说明当前行为与期望行为的差异',
+        '给出最小修复切片，并说明需要同步哪些状态或接口'
+      ]
+    };
+  }
+
+  if (/文档|说明|记录|沉淀|交付件|手册/.test(blockedReason)) {
+    return {
+      key: 'documentation',
+      label: '文档 / 交付沉淀阻塞',
+      tone: 'info',
+      description: '当前更像结论、记录或交付材料未整理，适合直接转到文档角色收口。',
+      templateKey: 'document',
+      targetRoleKey: 'document',
+      playbook: [
+        '先确认要产出的交付物类型：说明、阶段总结、操作手册还是决策记录。',
+        '把现有结论结构化，不要让文档角色重新猜测背景。',
+        '沉淀完成后同步回主链路，避免知识只留在消息里。'
+      ],
+      draftGoal: '把当前阶段结论整理成可交付、可复用的文档材料。',
+      draftChecklist: [
+        '明确交付物类型和目标读者',
+        '按结论、决策、风险、后续动作整理内容',
+        '输出后同步给需要继续执行的子窗口'
+      ]
+    };
+  }
+
+  if (/报错|异常|错误|失败|bug|编译|构建|运行|代码|实现|修复|崩溃/.test(blockedReason)) {
+    return {
+      key: 'implementation',
+      label: '实现 / 代码阻塞',
+      tone: 'danger',
+      description: '当前更像实现过程中的具体技术问题，需要开发视角优先收敛根因和最短修复路径。',
+      templateKey: 'unblock',
+      targetRoleKey: 'developer',
+      playbook: [
+        '先定位是实现错误、编译失败还是运行时异常，不要笼统归类为“代码问题”。',
+        '优先给出根因假设和最短验证路径，而不是直接扩散更多子任务。',
+        '如果影响主链路，先说明修复前能否通过降级方案继续推进。'
+      ],
+      draftGoal: '优先定位实现类阻塞的根因，并给出最短修复与验证路径。',
+      draftChecklist: [
+        '确认阻塞属于编译、运行时、逻辑错误还是第三方依赖问题',
+        '给出最短验证路径和预期修复结果',
+        '说明修复前后对上下游窗口的影响'
+      ]
+    };
+  }
+
+  return {
+    key: 'unknown',
+    label: '待进一步判断',
+    tone: 'info',
+    description: '当前阻塞描述仍然偏模糊，建议先补齐信息，再决定派给谁最合适。',
+    templateKey: 'unblock',
+    targetRoleKey: roleKey === 'product' ? 'developer' : roleKey,
+    playbook: [
+      '先补充阻塞原因、影响范围和当前尝试过的动作。',
+      '如果 1 轮内仍无法判断，再转给更适合的角色收敛问题。',
+      '避免在原因不明时继续扩派子任务。'
+    ],
+    draftGoal: '先把阻塞补充到可判断、可派单的粒度，再决定最短解除路径。',
+    draftChecklist: [
+      '补充阻塞现象、影响范围和已尝试动作',
+      '判断这是信息缺口、依赖等待还是实现问题',
+      '最后给出架构师现在可以立刻执行的下一步'
+    ]
+  };
 }

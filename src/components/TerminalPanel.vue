@@ -22,6 +22,7 @@ let pendingInput = '';
 let flushTimer: number | null = null;
 let resizeTimer: number | null = null;
 let lastReportedSize = '';
+let resizeObserver: ResizeObserver | null = null;
 
 function queueInput(data: string) {
   pendingInput += data;
@@ -48,16 +49,17 @@ function renderPendingChunks() {
     terminal.write(props.chunks[renderedCount]);
     renderedCount += 1;
   }
-  fitAddon?.fit();
 }
 
 function resetTerminal() {
   if (!terminal) {
     return;
   }
-  terminal.clear();
+  terminal.reset();
   renderedCount = 0;
+  fitAddon?.fit();
   renderPendingChunks();
+  reportTerminalSize();
 }
 
 function flushInputNow() {
@@ -86,7 +88,7 @@ function reportTerminalSize() {
   });
 }
 
-function handleWindowResize() {
+function scheduleResizeFit() {
   if (resizeTimer !== null) {
     window.clearTimeout(resizeTimer);
   }
@@ -97,12 +99,21 @@ function handleWindowResize() {
   }, 80);
 }
 
+function handleWindowResize() {
+  scheduleResizeFit();
+}
+
 onMounted(() => {
   terminal = new Terminal({
-    convertEol: true,
+    convertEol: false,
     fontSize: 13,
+    fontFamily: 'Cascadia Mono, Cascadia Code, Consolas, "Courier New", monospace',
     cursorBlink: true,
     disableStdin: !props.interactive,
+    scrollback: 5000,
+    windowsPty: {
+      backend: 'conpty'
+    },
     theme: {
       background: '#020617'
     }
@@ -119,6 +130,10 @@ onMounted(() => {
     terminal.open(containerRef.value);
     fitAddon.fit();
     reportTerminalSize();
+    resizeObserver = new ResizeObserver(() => {
+      scheduleResizeFit();
+    });
+    resizeObserver.observe(containerRef.value);
   }
   renderPendingChunks();
   window.addEventListener('resize', handleWindowResize);
@@ -130,6 +145,8 @@ onBeforeUnmount(() => {
     window.clearTimeout(resizeTimer);
     resizeTimer = null;
   }
+  resizeObserver?.disconnect();
+  resizeObserver = null;
   window.removeEventListener('resize', handleWindowResize);
   terminal?.dispose();
 });
@@ -138,7 +155,6 @@ watch(() => props.chunks.length, () => renderPendingChunks());
 watch(() => props.sessionId, () => {
   lastReportedSize = '';
   resetTerminal();
-  reportTerminalSize();
 });
 watch(() => props.interactive, (interactive) => {
   if (terminal) {
@@ -150,3 +166,26 @@ watch(() => props.interactive, (interactive) => {
 <template>
   <div ref="containerRef" class="terminal-wrapper"></div>
 </template>
+
+<style scoped>
+.terminal-wrapper {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.terminal-wrapper :deep(.xterm) {
+  height: 100%;
+}
+
+.terminal-wrapper :deep(.xterm-screen) {
+  height: 100% !important;
+}
+
+.terminal-wrapper :deep(.xterm-viewport) {
+  height: 100% !important;
+  overflow-y: auto !important;
+}
+</style>

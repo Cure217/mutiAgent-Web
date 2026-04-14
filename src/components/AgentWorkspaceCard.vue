@@ -7,6 +7,10 @@ defineProps<{
   selected?: boolean;
 }>();
 
+function resolveCoordinationTagType(tone: AgentWorkspaceSummary['coordinationTone']) {
+  return tone;
+}
+
 const emit = defineEmits<{
   select: [];
   openDetail: [];
@@ -29,15 +33,15 @@ const emit = defineEmits<{
           <div class="workspace-kind">{{ summary.workspaceKindLabel }}</div>
         </div>
       </div>
-      <StatusTag :status="summary.session.status" />
+      <el-tag :type="resolveCoordinationTagType(summary.coordinationTone)">{{ summary.coordinationLabel }}</el-tag>
     </header>
 
     <div class="workspace-body">
       <div class="workspace-title">{{ summary.title }}</div>
-      <div class="workspace-subtitle">{{ summary.instanceName }} · {{ summary.appType }}</div>
+      <div class="workspace-subtitle">{{ summary.instanceName }} · {{ summary.appType === 'unknown' ? '未标注类型' : summary.appType }}</div>
       <div class="workspace-progress">{{ summary.progressHint }}</div>
       <div class="workspace-meta">
-        <span>状态：{{ summary.coordinationLabel }}</span>
+        <span class="workspace-meta-item">进程：<StatusTag :status="summary.session.status" /></span>
         <span>最近活跃：{{ summary.lastActiveText }}</span>
       </div>
       <div class="workspace-project">{{ summary.projectPath }}</div>
@@ -178,6 +182,12 @@ const emit = defineEmits<{
   gap: 8px 12px;
   font-size: 12px;
   color: #64748b;
+}
+
+.workspace-meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .workspace-project {

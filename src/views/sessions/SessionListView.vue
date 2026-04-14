@@ -8,6 +8,8 @@ import { useConfigStore } from '@/stores/configs';
 import { useInstanceStore } from '@/stores/instances';
 import { useSessionStore } from '@/stores/sessions';
 import type { HistorySearchResult } from '@/types/api';
+import { buildWorkspaceSummary, isCollaborativeWorkspaceSession } from '@/utils/architectConsole';
+import { pickPreferredInstanceId, rememberPreferredInstance, sortInstancesByPreference } from '@/utils/instancePreference';
 
 const router = useRouter();
 const configStore = useConfigStore();
@@ -55,9 +57,17 @@ const historyQuery = reactive({
 });
 
 const hasInstances = computed(() => instanceStore.items.length > 0);
+const sortedInstances = computed(() => sortInstancesByPreference(instanceStore.items));
 const appTypeOptions = computed(() =>
   Array.from(new Set(instanceStore.items.map((item) => item.appType).filter(Boolean)))
 );
+const sessionWorkspaceSummaryMap = computed(() =>
+  new Map(sessionStore.items.map((item) => [item.id, buildWorkspaceSummary(item, instanceStore.items)]))
+);
+const interactionModeOptions = [
+  { label: '终端协作（RAW，推荐）', value: 'RAW', disabled: false },
+  { label: '结构化协作（暂未支持）', value: 'STRUCTURED', disabled: true }
+];
 const historyKeywordTokens = computed(() =>
   historyForm.keyword
     .split(/\s+/)
@@ -75,7 +85,7 @@ function openCreateDialog() {
     ElMessage.warning('请先创建应用实例');
     return;
   }
-  form.appInstanceId = instanceStore.items[0]?.id ?? '';
+  form.appInstanceId = pickPreferredInstanceId(instanceStore.items);
   form.title = '';
   form.projectPath = configStore.defaultProjectPath || 'D:\\Project\\ali\\260409';
   form.interactionMode = 'RAW';
@@ -83,8 +93,17 @@ function openCreateDialog() {
   dialogVisible.value = true;
 }
 
+function handleAppInstanceChange(value: string) {
+  rememberPreferredInstance(value);
+}
+
 async function submit() {
+  if (form.interactionMode === 'STRUCTURED') {
+    ElMessage.warning('当前版本暂不支持 STRUCTURED 模式，请改用 RAW 终端协作模式');
+    return;
+  }
   try {
+    rememberPreferredInstance(form.appInstanceId);
     const session = await sessionStore.create({
       appInstanceId: form.appInstanceId,
       title: form.title,
@@ -115,6 +134,41 @@ function goToDetail(sessionId: string, messageId?: string) {
     path: `/sessions/${sessionId}`,
     query: messageId ? { messageId } : undefined
   });
+}
+
+function formatInteractionModeLabel(interactionMode?: string) {
+  switch ((interactionMode || '').toUpperCase()) {
+    case 'RAW':
+      return '终端协作';
+    case 'STRUCTURED':
+      return '结构化协作';
+    case 'EMBEDDED':
+      return '嵌入终端';
+    case 'TEXT':
+      return '文本对话';
+    default:
+      return interactionMode || '未知模式';
+  }
+}
+
+function resolveSessionKindLabel(sessionId: string) {
+  const summary = sessionWorkspaceSummaryMap.value.get(sessionId);
+  return summary?.workspaceKindLabel || '普通会话';
+}
+
+function resolveSessionRoleLabel(sessionId: string) {
+  const summary = sessionWorkspaceSummaryMap.value.get(sessionId);
+  return summary && isCollaborativeWorkspaceSession(summary.session) ? summary.role.label : '—';
+}
+
+function resolveSessionCoordinationLabel(sessionId: string) {
+  const summary = sessionWorkspaceSummaryMap.value.get(sessionId);
+  return summary && isCollaborativeWorkspaceSession(summary.session) ? summary.coordinationLabel : '—';
+}
+
+function resolveSessionCoordinationTagType(sessionId: string) {
+  const summary = sessionWorkspaceSummaryMap.value.get(sessionId);
+  return summary && isCollaborativeWorkspaceSession(summary.session) ? summary.coordinationTone : 'info';
 }
 
 async function submitHistorySearch() {
@@ -402,12 +456,35 @@ async function handleMessagePageSizeChange(pageSize: number) {
       <el-table :data="sessionStore.items" v-loading="sessionStore.loading">
         <el-table-column prop="title" label="会话标题" min-width="220" />
         <el-table-column prop="appInstanceId" label="实例 ID" min-width="180" />
-        <el-table-column label="状态" width="130">
+        <el-table-column label="窗口类型" width="120">
+          <template #default="{ row }">
+            <el-tag size="small" :type="resolveSessionKindLabel(row.id) === '协作子窗口' ? 'primary' : 'info'">
+              {{ resolveSessionKindLabel(row.id) }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="角色" width="110">
+          <template #default="{ row }">
+            {{ resolveSessionRoleLabel(row.id) }}
+          </template>
+        </el-table-column>
+        <el-table-column label="协作状态" width="120">
+          <template #default="{ row }">
+            <el-tag size="small" :type="resolveSessionCoordinationTagType(row.id)">
+              {{ resolveSessionCoordinationLabel(row.id) }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="进程状态" width="130">
           <template #default="{ row }">
             <StatusTag :status="row.status" />
           </template>
         </el-table-column>
-        <el-table-column prop="interactionMode" label="交互模式" width="120" />
+        <el-table-column label="交互模式" width="140">
+          <template #default="{ row }">
+            {{ formatInteractionModeLabel(row.interactionMode) }}
+          </template>
+        </el-table-column>
         <el-table-column prop="pid" label="PID" width="100" />
         <el-table-column prop="createdAt" label="创建时间" min-width="180" />
         <el-table-column label="操作" width="140" fixed="right">
@@ -421,9 +498,9 @@ async function handleMessagePageSizeChange(pageSize: number) {
     <el-dialog v-model="dialogVisible" title="新建会话" width="680px">
       <el-form label-width="110px">
         <el-form-item label="应用实例">
-          <el-select v-model="form.appInstanceId" style="width: 100%">
+          <el-select v-model="form.appInstanceId" style="width: 100%" @change="handleAppInstanceChange">
             <el-option
-              v-for="instance in instanceStore.items"
+              v-for="instance in sortedInstances"
               :key="instance.id"
               :label="`${instance.name} (${instance.appType})`"
               :value="instance.id"
@@ -442,9 +519,15 @@ async function handleMessagePageSizeChange(pageSize: number) {
         </el-form-item>
         <el-form-item label="交互模式">
           <el-select v-model="form.interactionMode">
-            <el-option label="RAW" value="RAW" />
-            <el-option label="STRUCTURED" value="STRUCTURED" />
+            <el-option
+              v-for="option in interactionModeOptions"
+              :key="option.value"
+              :label="option.label"
+              :value="option.value"
+              :disabled="option.disabled"
+            />
           </el-select>
+          <div class="field-tip">当前版本仅支持 RAW 终端协作，STRUCTURED 暂未开放。</div>
         </el-form-item>
         <el-form-item label="初始输入">
           <el-input v-model="form.initInput" type="textarea" :rows="5" />
@@ -498,5 +581,11 @@ async function handleMessagePageSizeChange(pageSize: number) {
   display: flex;
   justify-content: flex-end;
   margin-top: 16px;
+}
+
+.field-tip {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #64748b;
 }
 </style>
