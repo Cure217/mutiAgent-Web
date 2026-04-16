@@ -35,7 +35,7 @@ import { pickPreferredInstanceId, rememberPreferredInstance, sortInstancesByPref
 
 type WorkspaceLaneFilter = CoordinationState | 'all';
 type WorkspaceLogCategory = 'all' | 'dispatch' | 'status' | 'close';
-type GuideAction = 'dispatch' | 'summary' | 'logs' | 'source';
+type GuideAction = 'dispatch' | 'summary' | 'logs' | 'source' | 'instances';
 type DispatchTemplateKey = 'continue' | 'handoff' | 'unblock';
 const TEAM_TEMPLATE_CONFIG_GROUP = 'architect';
 const TEAM_TEMPLATE_CONFIG_KEY = 'dispatchTemplateLibrary';
@@ -152,7 +152,9 @@ const sharedContextModeOptions = [
   { label: '全部活跃窗口', value: 'all_active' as SharedContextMode, description: '适合做汇总调度，但上下文会更长。' }
 ] as const;
 
+const hasInstances = computed(() => instanceStore.items.length > 0);
 const enabledInstances = computed(() => sortInstancesByPreference(instanceStore.items.filter((item) => item.enabled)));
+const hasEnabledInstances = computed(() => enabledInstances.value.length > 0);
 const workspaceSummaries = computed(() => finalizeWorkspaceSummaries(
   sessionStore.items
     .filter((item) => isCollaborativeWorkspaceSession(item))
@@ -597,13 +599,22 @@ const summaryDraftPlaceholder = computed(() => {
   ].join('\n');
 });
 const architectHeadline = computed(() => {
+  if (!workspaceSummaries.value.length && !hasEnabledInstances.value) {
+    return {
+      title: hasInstances.value ? '先启用一个应用实例' : '先创建一个应用实例',
+      description: '统一调度创建子窗口前需要一个已启用的应用实例。请先到应用实例管理创建或启用实例，再回来开始派单。',
+      tone: 'warning' as const,
+      actionLabel: '去应用实例管理',
+      action: 'instances' as GuideAction
+    };
+  }
   if (!workspaceSummaries.value.length) {
     return {
       title: '先从统一调度开始创建第一个子窗口',
       description: '当前还没有任何协作子窗口。建议先创建 1 个执行窗口，再围绕结果继续派单和汇总。',
       tone: 'info' as const,
       actionLabel: '打开统一调度',
-      targetTab: 'dispatch' as const
+      action: 'dispatch' as GuideAction
     };
   }
   if (blockedWorkspaces.value.length) {
@@ -615,7 +626,7 @@ const architectHeadline = computed(() => {
         .join('；'),
       tone: 'danger' as const,
       actionLabel: '查看阻塞与调度',
-      targetTab: 'summary' as const
+      action: 'summary' as GuideAction
     };
   }
   if (assignedWorkspaces.value.length) {
@@ -624,7 +635,7 @@ const architectHeadline = computed(() => {
       description: '建议先确认待开始窗口的任务说明和依赖是否齐全，再统一启动下一轮执行。',
       tone: 'warning' as const,
       actionLabel: '查看统一调度',
-      targetTab: 'dispatch' as const
+      action: 'dispatch' as GuideAction
     };
   }
   if (runningWorkspaces.value.length) {
@@ -633,7 +644,7 @@ const architectHeadline = computed(() => {
       description: '建议优先查看当前聚焦子窗口的进展与阻塞，再决定是否继续派单或汇总。',
       tone: 'primary' as const,
       actionLabel: '查看操作流水',
-      targetTab: 'logs' as const
+      action: 'logs' as GuideAction
     };
   }
   return {
@@ -643,7 +654,7 @@ const architectHeadline = computed(() => {
       : '当前可继续整理成果、关闭无效窗口或创建新的执行任务。',
     tone: 'success' as const,
     actionLabel: '查看汇总再调度',
-    targetTab: 'summary' as const
+    action: 'summary' as GuideAction
   };
 });
 const workspaceListTitle = computed(() => activeLaneFilter.value === 'all' ? '全部子窗口' : `${activeLaneLabel.value}子窗口`);
@@ -676,7 +687,13 @@ function buildDashboardContextQuery(targetSessionId: string) {
     dashboardDetail: detailTab.value
   };
 }
-const focusEmptyTips = computed(() => !workspaceSummaries.value.length
+const focusEmptyTips = computed(() => !workspaceSummaries.value.length && !hasEnabledInstances.value
+  ? [
+    hasInstances.value ? '先去“应用实例管理”启用一个实例。' : '先去“应用实例管理”创建并启用一个实例。',
+    '回到总控台后，在右侧统一调度栏选择角色、实例和任务说明。',
+    '点击“创建并派发”生成第一个子窗口。'
+  ]
+  : !workspaceSummaries.value.length
   ? [
     '先在右侧统一调度栏选择角色、实例和任务说明。',
     '点击“创建并派发”生成第一个子窗口。',
@@ -688,6 +705,21 @@ const focusEmptyTips = computed(() => !workspaceSummaries.value.length
     '需要继续推进时，再到右侧统一调度栏发送下一轮任务。'
   ]);
 const operatorGuide = computed(() => {
+  if (!workspaceSummaries.value.length && !hasEnabledInstances.value) {
+    return {
+      title: '第一次使用先准备应用实例',
+      description: '总控台负责派发子窗口，但创建子窗口前必须先有一个已启用的应用实例。',
+      tone: 'warning' as const,
+      steps: [
+        hasInstances.value ? '进入应用实例管理，启用一个可运行实例。' : '进入应用实例管理，创建并启用第一个实例。',
+        '回到总控台后选择角色、实例和任务说明。',
+        '点击“创建并派发”，生成第一个协作子窗口。'
+      ],
+      actionLabel: '去应用实例管理',
+      action: 'instances' as GuideAction
+    };
+  }
+
   if (!workspaceSummaries.value.length) {
     return {
       title: '第一次使用建议按这 3 步走',
@@ -804,6 +836,9 @@ const workflowSteps = computed(() => {
 
 function syncDispatchDefaults() {
   const currentEnabled = enabledInstances.value.some((item) => item.id === dispatchForm.instanceId);
+  if (!enabledInstances.value.length) {
+    dispatchForm.instanceId = '';
+  }
   if ((!dispatchForm.instanceId || !currentEnabled) && enabledInstances.value.length > 0) {
     dispatchForm.instanceId = pickPreferredInstanceId(enabledInstances.value);
   }
@@ -1582,6 +1617,10 @@ function handleGuideAction(action: GuideAction) {
     focusSummarySyncSource();
     return;
   }
+  if (action === 'instances') {
+    openInstanceAdmin();
+    return;
+  }
   openControlTab(action);
 }
 
@@ -1815,6 +1854,11 @@ function buildWorkspaceTitle() {
 }
 
 async function handleDispatch() {
+  if (dispatchForm.mode === 'new' && !hasEnabledInstances.value) {
+    ElMessage.warning(hasInstances.value ? '请先启用一个应用实例' : '请先创建并启用应用实例');
+    openInstanceAdmin();
+    return false;
+  }
   if (!dispatchForm.instruction.trim()) {
     ElMessage.warning('请先输入要派发的任务说明');
     return false;
@@ -1951,6 +1995,7 @@ function openSessionDetail(sessionId: string) {
   });
 }
 function openSessionAdmin() { router.push('/sessions'); }
+function openInstanceAdmin() { router.push({ name: 'instances' }); }
 
 watch(() => [configStore.defaultProjectPath, enabledInstances.value.length], syncDispatchDefaults, { immediate: true });
 watch(() => dispatchForm.mode, (mode) => { if (mode === 'existing' && !dispatchForm.targetSessionId) syncDispatchDefaults(); if (mode === 'new') dispatchForm.targetSessionId = ''; }, { immediate: true });
@@ -2014,7 +2059,7 @@ onBeforeUnmount(() => {
           </div>
           <div class="architect-banner__actions">
             <el-tag :type="architectHeadline.tone" effect="dark">{{ activeLaneLabel }}</el-tag>
-            <el-button type="primary" @click="openControlTab(architectHeadline.targetTab)">
+            <el-button type="primary" @click="handleGuideAction(architectHeadline.action)">
               {{ architectHeadline.actionLabel }}
             </el-button>
           </div>
@@ -2055,7 +2100,9 @@ onBeforeUnmount(() => {
               <span>{{ tip }}</span>
             </div>
             <div class="align-right">
-              <el-button type="primary" @click="openControlTab('dispatch')">打开统一调度</el-button>
+              <el-button type="primary" @click="handleGuideAction(!workspaceSummaries.length && !hasEnabledInstances ? 'instances' : 'dispatch')">
+                {{ !workspaceSummaries.length && !hasEnabledInstances ? '去应用实例管理' : '打开统一调度' }}
+              </el-button>
             </div>
           </div>
         </div>
@@ -2370,8 +2417,20 @@ onBeforeUnmount(() => {
                 <el-form label-width="84px">
                   <el-form-item label="调度方式"><el-radio-group v-model="dispatchForm.mode"><el-radio-button label="new" value="new">新建</el-radio-button><el-radio-button label="existing" value="existing">派单</el-radio-button></el-radio-group></el-form-item>
                   <el-form-item label="角色"><el-select v-model="dispatchForm.roleKey" style="width:100%"><el-option v-for="role in WORKSPACE_ROLES" :key="role.key" :label="`${role.emoji} ${role.label}`" :value="role.key" /></el-select></el-form-item>
-                  <el-form-item v-if="dispatchForm.mode === 'new'" label="实例"><el-select v-model="dispatchForm.instanceId" style="width:100%" @change="handleDispatchInstanceChange"><el-option v-for="instance in enabledInstances" :key="instance.id" :label="`${instance.name} (${instance.appType || '未标注类型'})`" :value="instance.id" /></el-select></el-form-item>
-                  <el-form-item v-else label="目标窗口"><el-select v-model="dispatchForm.targetSessionId" style="width:100%" placeholder="当前没有可继续派单的子窗口"><el-option v-for="workspace in dispatchableWorkspaces" :key="workspace.id" :label="`${workspace.role.label} · ${workspace.title}`" :value="workspace.id" /></el-select></el-form-item>
+                  <el-alert
+                    v-if="dispatchForm.mode === 'new' && !hasEnabledInstances"
+                    :title="hasInstances ? '当前没有启用实例' : '当前还没有应用实例'"
+                    description="创建新的协作子窗口前，请先到应用实例管理创建或启用实例。"
+                    type="warning"
+                    show-icon
+                    :closable="false"
+                  />
+                  <div v-if="dispatchForm.mode === 'new' && !hasEnabledInstances" class="dispatch-instance-empty">
+                    <span>准备好实例后，回到这里即可继续选择角色和派发任务。</span>
+                    <el-button size="small" type="primary" @click="openInstanceAdmin">去应用实例管理</el-button>
+                  </div>
+                  <el-form-item v-if="dispatchForm.mode === 'new' && hasEnabledInstances" label="实例"><el-select v-model="dispatchForm.instanceId" style="width:100%" @change="handleDispatchInstanceChange"><el-option v-for="instance in enabledInstances" :key="instance.id" :label="`${instance.name} (${instance.appType || '未标注类型'})`" :value="instance.id" /></el-select></el-form-item>
+                  <el-form-item v-else-if="dispatchForm.mode === 'existing'" label="目标窗口"><el-select v-model="dispatchForm.targetSessionId" style="width:100%" placeholder="当前没有可继续派单的子窗口"><el-option v-for="workspace in dispatchableWorkspaces" :key="workspace.id" :label="`${workspace.role.label} · ${workspace.title}`" :value="workspace.id" /></el-select></el-form-item>
                   <el-form-item label="任务标题"><el-input v-model="dispatchForm.title" clearable /></el-form-item>
                   <el-form-item label="项目目录"><el-input v-model="dispatchForm.projectPath" clearable /></el-form-item>
                   <el-form-item label="依赖窗口"><el-select v-model="dispatchForm.dependencyIds" style="width:100%" multiple collapse-tags collapse-tags-tooltip><el-option v-for="workspace in dispatchDependencyOptions" :key="workspace.id" :label="`${workspace.role.label} · ${workspace.title}`" :value="workspace.id" /></el-select></el-form-item>
@@ -2403,7 +2462,8 @@ onBeforeUnmount(() => {
                   </el-form-item>
                   <div v-if="dispatchForm.includeSharedContext" class="form-help-text">固定来源不会自动变成真实依赖，但会在共享上下文里优先带入，适合复用上轮关键窗口。</div>
                   <div class="form-help-text">{{ sharedContextHint }}</div>
-                  <div class="align-right"><el-button :loading="dispatching" type="primary" @click="handleDispatch">{{ dispatchForm.mode === 'new' ? '创建并派发' : '发送调度' }}</el-button></div>
+                  <div v-if="dispatchForm.mode === 'new' && !hasEnabledInstances" class="form-help-text">创建并派发已暂停：需要先准备一个已启用的应用实例。</div>
+                  <div class="align-right"><el-button :loading="dispatching" type="primary" :disabled="dispatchForm.mode === 'new' && !hasEnabledInstances" @click="handleDispatch">{{ dispatchForm.mode === 'new' ? '创建并派发' : '发送调度' }}</el-button></div>
                 </el-form>
                 <div class="task-packet-card">
                   <div class="card-head card-head--start">
@@ -2671,6 +2731,7 @@ onBeforeUnmount(() => {
 .workspace-editor-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .control-tabs :deep(.el-tabs__nav-wrap) { margin-bottom: 4px; }
 .control-tab-body { display: flex; flex-direction: column; gap: 16px; }
+.dispatch-instance-empty { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; font-size: 13px; line-height: 1.7; }
 .task-packet-card { padding: 14px; border-radius: 16px; background: rgba(37, 99, 235, .06); border: 1px solid rgba(37, 99, 235, .12); }
 .task-packet-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
 .task-packet-section { padding: 12px; border-radius: 14px; background: rgba(255, 255, 255, .92); border: 1px solid rgba(148, 163, 184, .16); }

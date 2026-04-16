@@ -127,7 +127,30 @@ const historyQuery = reactive({
 const recentHistorySearches = ref<HistoryReplayItem[]>([]);
 
 const hasInstances = computed(() => instanceStore.items.length > 0);
-const sortedInstances = computed(() => sortInstancesByPreference(instanceStore.items));
+const enabledInstances = computed(() => sortInstancesByPreference(instanceStore.items.filter((item) => item.enabled)));
+const hasEnabledInstances = computed(() => enabledInstances.value.length > 0);
+const createSessionActionLabel = computed(() => {
+  if (hasEnabledInstances.value) {
+    return '新建会话';
+  }
+  return hasInstances.value ? '先启用实例' : '先创建实例';
+});
+const sessionEntryGuide = computed(() => {
+  if (hasEnabledInstances.value) {
+    return null;
+  }
+  return hasInstances.value
+    ? {
+      title: '当前没有启用的应用实例',
+      description: '会话只能基于已启用实例启动。请先到应用实例管理启用一个实例，再回来新建会话。',
+      type: 'warning' as const
+    }
+    : {
+      title: '先创建一个应用实例',
+      description: '当前还没有应用实例。请先到应用实例管理创建并启用实例，再回来启动第一个会话。',
+      type: 'info' as const
+    };
+});
 const appTypeOptions = computed(() =>
   Array.from(new Set(instanceStore.items.map((item) => item.appType).filter(Boolean)))
 );
@@ -160,17 +183,35 @@ onBeforeUnmount(() => {
   sessionStore.disconnectSocket();
 });
 
+function openInstanceAdmin() {
+  router.push({ name: 'instances' });
+}
+
 function openCreateDialog() {
   if (!hasInstances.value) {
-    ElMessage.warning('请先创建应用实例');
+    ElMessage.warning('请先创建并启用应用实例');
+    openInstanceAdmin();
     return;
   }
-  form.appInstanceId = pickPreferredInstanceId(instanceStore.items);
+  if (!hasEnabledInstances.value) {
+    ElMessage.warning('请先启用一个应用实例');
+    openInstanceAdmin();
+    return;
+  }
+  form.appInstanceId = pickPreferredInstanceId(enabledInstances.value);
   form.title = '';
   form.projectPath = configStore.defaultProjectPath;
   form.interactionMode = 'RAW';
   form.initInput = '';
   dialogVisible.value = true;
+}
+
+function handleCreateSessionAction() {
+  if (hasEnabledInstances.value) {
+    openCreateDialog();
+    return;
+  }
+  openInstanceAdmin();
 }
 
 function handleAppInstanceChange(value: string) {
@@ -816,7 +857,20 @@ watch(
       <h2>会话管理</h2>
       <div class="page-toolbar">
         <el-button @click="sessionStore.loadList">刷新列表</el-button>
-        <el-button type="primary" @click="openCreateDialog">新建会话</el-button>
+        <el-button type="primary" @click="handleCreateSessionAction">{{ createSessionActionLabel }}</el-button>
+      </div>
+    </div>
+
+    <div v-if="sessionEntryGuide" class="entry-guide">
+      <el-alert
+        :title="sessionEntryGuide.title"
+        :description="sessionEntryGuide.description"
+        :type="sessionEntryGuide.type"
+        show-icon
+        :closable="false"
+      />
+      <div class="entry-guide__actions">
+        <el-button size="small" type="primary" @click="openInstanceAdmin">去应用实例管理</el-button>
       </div>
     </div>
 
@@ -1072,7 +1126,7 @@ watch(
         <el-form-item label="应用实例">
           <el-select v-model="form.appInstanceId" style="width: 100%" @change="handleAppInstanceChange">
             <el-option
-              v-for="instance in sortedInstances"
+              v-for="instance in enabledInstances"
               :key="instance.id"
               :label="`${instance.name} (${instance.appType})`"
               :value="instance.id"
@@ -1159,6 +1213,16 @@ watch(
   margin-top: 6px;
   font-size: 12px;
   color: #64748b;
+}
+
+.entry-guide {
+  margin-bottom: 16px;
+}
+
+.entry-guide__actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
 }
 
 .history-replay-panel {
