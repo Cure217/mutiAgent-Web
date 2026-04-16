@@ -16,6 +16,7 @@ import {
   type CreateSessionPayload
 } from '@/api/session';
 import { createSessionSocket } from '@/api/ws';
+import { useRuntimeStore } from '@/stores/runtime';
 import type { AiSession, MessageRecord, SessionEventEnvelope, SessionTimelineItem, SessionWorkspaceMeta } from '@/types/api';
 import { normalizeMessageText, normalizeRawLogText, normalizeTerminalText } from '@/utils/text';
 
@@ -48,6 +49,7 @@ export const useSessionStore = defineStore('sessions', () => {
   let listRefreshTimer: number | null = null;
   let reconnectTimer: number | null = null;
   let heartbeatTimer: number | null = null;
+  let runtimeRefreshTimer: number | null = null;
   let reconnectAttempt = 0;
   let manualSocketDisconnect = false;
   let socketPromise: Promise<WebSocket> | null = null;
@@ -71,7 +73,11 @@ export const useSessionStore = defineStore('sessions', () => {
     rawChunks.value = [];
     lastSessionError.value = null;
     currentSession.value = await fetchSession(sessionId);
-    observedSessionId.value = currentSession.value.id;
+    const nextObservedSessionId = currentSession.value.id;
+    if (observedSessionId.value !== nextObservedSessionId) {
+      observedSessionId.value = nextObservedSessionId;
+      scheduleRuntimeRefresh();
+    }
     sendSocketHeartbeat();
     const targetMessageId = options?.messageId || null;
     const messageItems = targetMessageId
@@ -157,6 +163,7 @@ export const useSessionStore = defineStore('sessions', () => {
         reconnectAttempt = 0;
         startHeartbeatLoop();
         sendSocketHeartbeat();
+        scheduleRuntimeRefresh();
         void loadList();
         if (currentSession.value?.id) {
           void loadDetail(currentSession.value.id, { messageId: highlightedMessageId.value });
@@ -166,6 +173,7 @@ export const useSessionStore = defineStore('sessions', () => {
         socketConnected.value = false;
         socket.value = null;
         stopHeartbeatLoop();
+        scheduleRuntimeRefresh();
         if (!manualSocketDisconnect) {
           scheduleSocketReconnect();
         }
@@ -173,6 +181,7 @@ export const useSessionStore = defineStore('sessions', () => {
       onError: () => {
         socketConnected.value = false;
         stopHeartbeatLoop();
+        scheduleRuntimeRefresh();
         if (!manualSocketDisconnect) {
           scheduleSocketReconnect();
         }
@@ -200,6 +209,7 @@ export const useSessionStore = defineStore('sessions', () => {
       socket.value = null;
     }
     socketConnected.value = false;
+    scheduleRuntimeRefresh();
   }
 
   function clearReconnectTimer() {
@@ -216,6 +226,13 @@ export const useSessionStore = defineStore('sessions', () => {
     }
   }
 
+  function clearRuntimeRefreshTimer() {
+    if (runtimeRefreshTimer !== null) {
+      window.clearTimeout(runtimeRefreshTimer);
+      runtimeRefreshTimer = null;
+    }
+  }
+
   function startHeartbeatLoop() {
     stopHeartbeatLoop();
     heartbeatTimer = window.setInterval(() => {
@@ -228,6 +245,17 @@ export const useSessionStore = defineStore('sessions', () => {
       window.clearInterval(heartbeatTimer);
       heartbeatTimer = null;
     }
+  }
+
+  function scheduleRuntimeRefresh(delay = 450) {
+    clearRuntimeRefreshTimer();
+    runtimeRefreshTimer = window.setTimeout(async () => {
+      runtimeRefreshTimer = null;
+      try {
+        await useRuntimeStore().refreshAll();
+      } catch {
+      }
+    }, delay);
   }
 
   function sendSocketHeartbeat() {

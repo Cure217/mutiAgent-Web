@@ -16,6 +16,8 @@ const menuItems = [
 
 const backendStatusType = computed(() => (runtimeStore.backendAvailable ? 'success' : 'danger'));
 const activeMenu = computed(() => route.path);
+const attachedClientCountText = computed(() => runtimeStore.statistics?.attachedClientCount ?? '-');
+const observingSessionAttachmentCountText = computed(() => runtimeStore.statistics?.observingSessionAttachmentCount ?? '-');
 
 onMounted(async () => {
   await runtimeStore.initialize();
@@ -50,6 +52,8 @@ function navigate(path: string) {
         <div class="header-title">{{ route.meta.title ?? '控制台' }}</div>
         <div class="header-actions">
           <el-tag :type="backendStatusType">{{ runtimeStore.backendStatusText }}</el-tag>
+          <el-tag v-if="runtimeStore.backendAvailable" type="info">客户端 {{ attachedClientCountText }}</el-tag>
+          <el-tag v-if="runtimeStore.backendAvailable" type="warning">观察会话 {{ observingSessionAttachmentCountText }}</el-tag>
           <el-button size="small" @click="runtimeStore.refreshAll">刷新状态</el-button>
         </div>
       </el-header>
