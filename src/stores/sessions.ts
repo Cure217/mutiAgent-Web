@@ -19,10 +19,23 @@ import { createSessionSocket } from '@/api/ws';
 import type { AiSession, MessageRecord, SessionEventEnvelope, SessionTimelineItem, SessionWorkspaceMeta } from '@/types/api';
 import { normalizeMessageText, normalizeRawLogText, normalizeTerminalText } from '@/utils/text';
 
+const SESSION_SOCKET_CLIENT_ID_STORAGE_KEY = 'muti-agent:session-socket-client-id:v1';
+
+function getOrCreateSessionSocketClientId() {
+  const existingValue = window.localStorage.getItem(SESSION_SOCKET_CLIENT_ID_STORAGE_KEY);
+  if (existingValue) {
+    return existingValue;
+  }
+  const nextValue = crypto.randomUUID();
+  window.localStorage.setItem(SESSION_SOCKET_CLIENT_ID_STORAGE_KEY, nextValue);
+  return nextValue;
+}
+
 export const useSessionStore = defineStore('sessions', () => {
   const items = ref<AiSession[]>([]);
   const runningItems = ref<AiSession[]>([]);
   const currentSession = ref<AiSession | null>(null);
+  const observedSessionId = ref<string | null>(null);
   const messages = ref<MessageRecord[]>([]);
   const timelineItems = ref<SessionTimelineItem[]>([]);
   const rawChunks = ref<string[]>([]);
@@ -34,6 +47,7 @@ export const useSessionStore = defineStore('sessions', () => {
   let refreshTimer: number | null = null;
   let listRefreshTimer: number | null = null;
   let reconnectTimer: number | null = null;
+  let heartbeatTimer: number | null = null;
   let reconnectAttempt = 0;
   let manualSocketDisconnect = false;
   let socketPromise: Promise<WebSocket> | null = null;
@@ -57,6 +71,8 @@ export const useSessionStore = defineStore('sessions', () => {
     rawChunks.value = [];
     lastSessionError.value = null;
     currentSession.value = await fetchSession(sessionId);
+    observedSessionId.value = currentSession.value.id;
+    sendSocketHeartbeat();
     const targetMessageId = options?.messageId || null;
     const messageItems = targetMessageId
       ? await fetchSessionMessagesAround(sessionId, { messageId: targetMessageId, before: 60, after: 60 })
@@ -139,6 +155,8 @@ export const useSessionStore = defineStore('sessions', () => {
       onOpen: () => {
         socketConnected.value = true;
         reconnectAttempt = 0;
+        startHeartbeatLoop();
+        sendSocketHeartbeat();
         void loadList();
         if (currentSession.value?.id) {
           void loadDetail(currentSession.value.id, { messageId: highlightedMessageId.value });
@@ -147,16 +165,22 @@ export const useSessionStore = defineStore('sessions', () => {
       onClose: () => {
         socketConnected.value = false;
         socket.value = null;
+        stopHeartbeatLoop();
         if (!manualSocketDisconnect) {
           scheduleSocketReconnect();
         }
       },
       onError: () => {
         socketConnected.value = false;
+        stopHeartbeatLoop();
         if (!manualSocketDisconnect) {
           scheduleSocketReconnect();
         }
       }
+    }, {
+      clientId: getOrCreateSessionSocketClientId(),
+      targetType: observedSessionId.value ? 'session' : undefined,
+      targetId: observedSessionId.value
     });
     try {
       socket.value = await socketPromise;
@@ -169,6 +193,8 @@ export const useSessionStore = defineStore('sessions', () => {
     manualSocketDisconnect = true;
     clearReconnectTimer();
     clearListRefreshTimer();
+    stopHeartbeatLoop();
+    observedSessionId.value = null;
     if (socket.value) {
       socket.value.close();
       socket.value = null;
@@ -187,6 +213,34 @@ export const useSessionStore = defineStore('sessions', () => {
     if (listRefreshTimer !== null) {
       window.clearTimeout(listRefreshTimer);
       listRefreshTimer = null;
+    }
+  }
+
+  function startHeartbeatLoop() {
+    stopHeartbeatLoop();
+    heartbeatTimer = window.setInterval(() => {
+      sendSocketHeartbeat();
+    }, 15000);
+  }
+
+  function stopHeartbeatLoop() {
+    if (heartbeatTimer !== null) {
+      window.clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+  }
+
+  function sendSocketHeartbeat() {
+    if (!socketConnected.value || !socket.value || socket.value.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    try {
+      socket.value.send(JSON.stringify({
+        type: 'client.heartbeat',
+        observedTargetType: observedSessionId.value ? 'session' : null,
+        observedTargetId: observedSessionId.value
+      }));
+    } catch {
     }
   }
 

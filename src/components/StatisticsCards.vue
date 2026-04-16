@@ -10,7 +10,8 @@ const items = [
   { label: '总会话数', key: 'sessionCount' },
   { label: '运行中会话', key: 'runningSessionCount' },
   { label: '消息总量', key: 'messageCount' },
-  { label: '运行中进程', key: 'runningProcessCount' }
+  { label: '运行中进程', key: 'runningProcessCount' },
+  { label: '已连接客户端', key: 'attachedClientCount' }
 ] as const;
 </script>
 

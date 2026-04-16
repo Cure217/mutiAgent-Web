@@ -4,6 +4,8 @@ export interface RuntimeHealth {
   dbPath: string;
   baseDir: string;
   runningProcesses: number;
+  attachedClientCount: number;
+  observingSessionAttachmentCount: number;
 }
 
 export interface RuntimeStatistics {
@@ -12,6 +14,8 @@ export interface RuntimeStatistics {
   runningSessionCount: number;
   messageCount: number;
   runningProcessCount: number;
+  attachedClientCount: number;
+  observingSessionAttachmentCount: number;
 }
 
 export interface ProcessInfo {
