@@ -3,7 +3,7 @@ import { computed, ref } from 'vue';
 import { fetchConfigs, updateConfigs, type ConfigItemPayload } from '@/api/config';
 import type { SystemConfig } from '@/types/api';
 
-const DEFAULT_PROJECT_PATH = 'D:\\Project\\ali\\260409';
+const DEFAULT_PROJECT_PATH = '';
 
 export const useConfigStore = defineStore('configs', () => {
   const items = ref<SystemConfig[]>([]);

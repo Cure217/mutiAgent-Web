@@ -8,7 +8,7 @@ const runtimeStore = useRuntimeStore();
 const configStore = useConfigStore();
 
 const form = reactive({
-  defaultProjectPath: 'D:\\Project\\ali\\260409',
+  defaultProjectPath: '',
   defaultShell: 'powershell',
   sessionLogRetentionDays: 30,
   defaultTerminalMode: 'raw',
@@ -29,7 +29,7 @@ async function refreshPage() {
 }
 
 function hydrateForm() {
-  form.defaultProjectPath = configStore.getValue('runtime', 'defaultProjectPath', 'D:\\Project\\ali\\260409');
+  form.defaultProjectPath = configStore.defaultProjectPath;
   form.defaultShell = configStore.getValue('runtime', 'defaultShell', 'powershell');
   form.sessionLogRetentionDays = normalizeNumber(
     configStore.getValue('storage', 'sessionLogRetentionDays', '30'),
@@ -192,6 +192,12 @@ function normalizeNumber(value: string, fallback: number) {
           />
           <el-alert
             title="默认项目目录会直接用于打开外部终端，并同步作为新建实例的默认工作目录。"
+            type="info"
+            :closable="false"
+            style="margin-top: 12px;"
+          />
+          <el-alert
+            title="如果当前还没有保存默认项目目录，系统会自动回退到当前用户主目录，不再绑死开发机路径。"
             type="info"
             :closable="false"
             style="margin-top: 12px;"

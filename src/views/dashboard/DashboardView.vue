@@ -807,7 +807,7 @@ function syncDispatchDefaults() {
   if ((!dispatchForm.instanceId || !currentEnabled) && enabledInstances.value.length > 0) {
     dispatchForm.instanceId = pickPreferredInstanceId(enabledInstances.value);
   }
-  if (!dispatchForm.projectPath) dispatchForm.projectPath = configStore.defaultProjectPath || 'D:\\Project\\ali\\260409';
+  if (!dispatchForm.projectPath) dispatchForm.projectPath = configStore.defaultProjectPath;
   const canKeepCurrentTarget = dispatchableWorkspaces.value.some((item) => item.id === dispatchForm.targetSessionId);
   if (!canKeepCurrentTarget) {
     dispatchForm.targetSessionId = dispatchableWorkspaces.value[0]?.id || '';
@@ -881,8 +881,7 @@ function resolveDispatchProjectPath(preferredSessionId?: string | null) {
   return preferredWorkspace?.projectPath
     || selectedWorkspace.value?.projectPath
     || configStore.defaultProjectPath
-    || dispatchForm.projectPath
-    || 'D:\\Project\\ali\\260409';
+    || dispatchForm.projectPath;
 }
 
 function buildDispatchOperationDetail(detail: Record<string, unknown> = {}) {

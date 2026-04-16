@@ -40,6 +40,7 @@ const focusMessageId = computed(() => {
   return typeof raw === 'string' && raw ? raw : null;
 });
 const returnToDashboard = computed(() => route.query.from === 'dashboard');
+const returnToSessionList = computed(() => route.query.from === 'sessions');
 const dashboardReturnQuery = computed(() => ({
   dashboardSessionId: typeof route.query.dashboardSessionId === 'string' && route.query.dashboardSessionId
     ? route.query.dashboardSessionId
@@ -753,11 +754,33 @@ function openRelatedWorkspace(targetSessionId: string) {
   });
 }
 
+function buildSessionListReturnQuery() {
+  const query: Record<string, string | string[]> = {};
+  Object.entries(route.query).forEach(([key, value]) => {
+    if (key === 'from' || key === 'messageId') {
+      return;
+    }
+    if (typeof value === 'string') {
+      query[key] = value;
+    } else if (Array.isArray(value)) {
+      query[key] = value.filter((item): item is string => typeof item === 'string');
+    }
+  });
+  return query;
+}
+
 function navigateBack() {
   if (returnToDashboard.value) {
     router.push({
       name: 'dashboard',
       query: dashboardReturnQuery.value
+    });
+    return;
+  }
+  if (returnToSessionList.value) {
+    router.push({
+      name: 'sessions',
+      query: buildSessionListReturnQuery()
     });
     return;
   }

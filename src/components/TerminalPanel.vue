@@ -23,6 +23,7 @@ let flushTimer: number | null = null;
 let resizeTimer: number | null = null;
 let lastReportedSize = '';
 let resizeObserver: ResizeObserver | null = null;
+let userInputArmed = false;
 
 function queueInput(data: string) {
   pendingInput += data;
@@ -39,6 +40,14 @@ function queueInput(data: string) {
       flushTimer = null;
     }
   }, 40);
+}
+
+function armUserInput() {
+  userInputArmed = true;
+}
+
+function normalizeTerminalInputData(data: string) {
+  return data.replace(/\x1b\[[IO]/g, '');
 }
 
 function renderPendingChunks() {
@@ -121,10 +130,13 @@ onMounted(() => {
   fitAddon = new FitAddon();
   terminal.loadAddon(fitAddon);
   terminal.onData((data) => {
-    if (!props.interactive) {
+    if (!props.interactive || !userInputArmed) {
       return;
     }
-    queueInput(data);
+    const normalizedData = normalizeTerminalInputData(data);
+    if (normalizedData) {
+      queueInput(normalizedData);
+    }
   });
   if (containerRef.value) {
     terminal.open(containerRef.value);
@@ -154,17 +166,27 @@ onBeforeUnmount(() => {
 watch(() => props.chunks.length, () => renderPendingChunks());
 watch(() => props.sessionId, () => {
   lastReportedSize = '';
+  userInputArmed = false;
   resetTerminal();
 });
 watch(() => props.interactive, (interactive) => {
   if (terminal) {
     terminal.options.disableStdin = !interactive;
   }
+  if (!interactive) {
+    userInputArmed = false;
+  }
 });
 </script>
 
 <template>
-  <div ref="containerRef" class="terminal-wrapper"></div>
+  <div
+    ref="containerRef"
+    class="terminal-wrapper"
+    @keydown.capture="armUserInput"
+    @paste.capture="armUserInput"
+    @pointerdown.capture="armUserInput"
+  ></div>
 </template>
 
 <style scoped>

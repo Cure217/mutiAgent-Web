@@ -23,7 +23,7 @@ const form = reactive({
   executablePath: '',
   launchCommand: 'codex.cmd',
   argsText: DEFAULT_CODEX_YOLO_ARG,
-  workdir: 'D:\\Project\\ali\\260409',
+  workdir: '',
   envText: 'TERM=xterm-256color',
   enabled: true,
   autoRestart: false,
@@ -79,7 +79,7 @@ function openCreateDialog() {
     executablePath: '',
     launchCommand: 'codex.cmd',
     argsText: DEFAULT_CODEX_YOLO_ARG,
-    workdir: configStore.defaultProjectPath || 'D:\\Project\\ali\\260409',
+    workdir: configStore.defaultProjectPath,
     envText: 'TERM=xterm-256color',
     enabled: true,
     autoRestart: false,
@@ -214,6 +214,7 @@ function buildTestLaunchSummary(instance: AppInstance, result: InstanceTestLaunc
   const lines = [
     `实例名称：${instance.name}`,
     `适配器：${result.adapterType}`,
+    `实例可执行路径：${instance.executablePath || '未配置（按启动命令兜底）'}`,
     `可执行程序：${result.executable}`,
     `解析路径：${result.resolvedExecutable ?? '未解析（可能依赖外部 shell / WSL）'}`,
     `工作目录：${result.workingDirectory ?? '-'}`,
@@ -306,7 +307,18 @@ function escapeHtml(value: string) {
           </el-select>
         </el-form-item>
         <el-form-item label="可执行路径">
-          <el-input v-model="form.executablePath" />
+          <el-input
+            v-model="form.executablePath"
+            placeholder="可留空；如需指定，请填写 exe/cmd 文件路径，不要填目录"
+          />
+        </el-form-item>
+        <el-form-item label="路径说明">
+          <el-alert
+            title="Windows 直跑 Codex 通常只需保留“启动命令 = codex.cmd”，可执行路径留空即可；如果这里填了目录，后端会拒绝保存。"
+            type="info"
+            :closable="false"
+            show-icon
+          />
         </el-form-item>
         <el-form-item label="启动命令">
           <el-input v-model="form.launchCommand" />

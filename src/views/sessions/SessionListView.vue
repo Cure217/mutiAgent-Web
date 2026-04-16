@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ElMessage } from 'element-plus';
-import { computed, onMounted, reactive, ref } from 'vue';
-import { useRouter } from 'vue-router';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { searchHistory } from '@/api/history';
 import StatusTag from '@/components/StatusTag.vue';
 import { useConfigStore } from '@/stores/configs';
@@ -12,49 +12,119 @@ import { buildWorkspaceSummary, isCollaborativeWorkspaceSession } from '@/utils/
 import { pickPreferredInstanceId, rememberPreferredInstance, sortInstancesByPreference } from '@/utils/instancePreference';
 
 const router = useRouter();
+const route = useRoute();
 const configStore = useConfigStore();
 const instanceStore = useInstanceStore();
 const sessionStore = useSessionStore();
 const dialogVisible = ref(false);
 const historyLoading = ref(false);
 const historySearched = ref(false);
-const historyResult = ref<HistorySearchResult>({
-  sessions: {
-    items: [],
-    pageNo: 1,
-    pageSize: 10,
-    total: 0
-  },
-  messages: {
-    items: [],
-    pageNo: 1,
-    pageSize: 10,
-    total: 0
-  }
-});
+const historyResult = ref<HistorySearchResult>(createEmptyHistoryResult());
+const HISTORY_DRAFT_STORAGE_KEY = 'muti-agent:session-history-draft:v1';
+const HISTORY_RECENT_STORAGE_KEY = 'muti-agent:session-history-recent:v1';
+const MAX_RECENT_HISTORY_SEARCHES = 5;
+let suppressHistoryRouteWatch = false;
 
-const form = reactive({
-  appInstanceId: '',
-  title: '',
-  projectPath: 'D:\\Project\\ali\\260409',
-  interactionMode: 'RAW',
-  initInput: ''
-});
+type HistoryReplayItem = {
+  keyword: string;
+  appType: string;
+  projectPath: string;
+  dateRange: string[];
+  sessionSortValue: string;
+  messageSortValue: string;
+  updatedAt: string;
+};
 
-const historyForm = reactive({
-  keyword: '',
-  appType: '',
-  projectPath: '',
-  dateRange: [] as string[]
-});
-const historyQuery = reactive({
+type HistoryReplayComparable = Pick<
+  HistoryReplayItem,
+  'keyword' | 'appType' | 'projectPath' | 'dateRange' | 'sessionSortValue' | 'messageSortValue'
+>;
+
+const DEFAULT_HISTORY_QUERY = {
   sessionPageNo: 1,
   sessionPageSize: 10,
   sessionSortValue: 'lastMessageAt_desc',
   messagePageNo: 1,
   messagePageSize: 10,
   messageSortValue: 'relevance_asc'
+};
+
+const sessionSortOptions = [
+  { label: '最近活跃优先', value: 'lastMessageAt_desc' },
+  { label: '最近活跃最早', value: 'lastMessageAt_asc' },
+  { label: '最新创建优先', value: 'createdAt_desc' },
+  { label: '最早创建优先', value: 'createdAt_asc' },
+  { label: '标题 A-Z', value: 'title_asc' },
+  { label: '标题 Z-A', value: 'title_desc' }
+] as const;
+
+const messageSortOptions = [
+  { label: '相关度优先', value: 'relevance_asc' },
+  { label: '最新消息优先', value: 'createdAt_desc' },
+  { label: '最早消息优先', value: 'createdAt_asc' },
+  { label: '序号从大到小', value: 'seqNo_desc' },
+  { label: '序号从小到大', value: 'seqNo_asc' }
+] as const;
+
+const allowedSessionSortValues = new Set(sessionSortOptions.map((item) => item.value));
+const allowedMessageSortValues = new Set(messageSortOptions.map((item) => item.value));
+
+const HISTORY_ROUTE_KEYS = new Set([
+  'history',
+  'historyKeyword',
+  'historyAppType',
+  'historyProjectPath',
+  'historyDateFrom',
+  'historyDateTo',
+  'historySessionPageNo',
+  'historySessionPageSize',
+  'historySessionSort',
+  'historyMessagePageNo',
+  'historyMessagePageSize',
+  'historyMessageSort'
+]);
+
+function createEmptyHistoryResult(): HistorySearchResult {
+  return {
+    sessions: {
+      items: [],
+      pageNo: 1,
+      pageSize: 10,
+      total: 0
+    },
+    messages: {
+      items: [],
+      pageNo: 1,
+      pageSize: 10,
+      total: 0
+    }
+  };
+}
+
+function createEmptyHistoryDraft() {
+  return {
+    keyword: '',
+    appType: '',
+    projectPath: '',
+    dateRange: [] as string[]
+  };
+}
+
+const form = reactive({
+  appInstanceId: '',
+  title: '',
+  projectPath: '',
+  interactionMode: 'RAW',
+  initInput: ''
 });
+
+const historyForm = reactive({
+  ...createEmptyHistoryDraft()
+});
+const historyQuery = reactive({
+  ...DEFAULT_HISTORY_QUERY
+});
+const recentHistorySearches = ref<HistoryReplayItem[]>([]);
 
 const hasInstances = computed(() => instanceStore.items.length > 0);
 const sortedInstances = computed(() => sortInstancesByPreference(instanceStore.items));
@@ -77,7 +147,17 @@ const historyKeywordTokens = computed(() =>
 );
 
 onMounted(async () => {
-  await Promise.all([instanceStore.load(), sessionStore.loadList(), configStore.load()]);
+  loadRecentHistorySearches();
+  try {
+    await Promise.all([instanceStore.load(), sessionStore.loadList(), configStore.load()]);
+  } finally {
+    await sessionStore.ensureSocket();
+  }
+  await applyHistoryStateFromRoute();
+});
+
+onBeforeUnmount(() => {
+  sessionStore.disconnectSocket();
 });
 
 function openCreateDialog() {
@@ -87,7 +167,7 @@ function openCreateDialog() {
   }
   form.appInstanceId = pickPreferredInstanceId(instanceStore.items);
   form.title = '';
-  form.projectPath = configStore.defaultProjectPath || 'D:\\Project\\ali\\260409';
+  form.projectPath = configStore.defaultProjectPath;
   form.interactionMode = 'RAW';
   form.initInput = '';
   dialogVisible.value = true;
@@ -132,7 +212,12 @@ async function chooseDirectory() {
 function goToDetail(sessionId: string, messageId?: string) {
   router.push({
     path: `/sessions/${sessionId}`,
-    query: messageId ? { messageId } : undefined
+    query: {
+      ...route.query,
+      ...buildHistoryRouteQuery(),
+      from: 'sessions',
+      ...(messageId ? { messageId } : {})
+    }
   });
 }
 
@@ -171,13 +256,13 @@ function resolveSessionCoordinationTagType(sessionId: string) {
   return summary && isCollaborativeWorkspaceSession(summary.session) ? summary.coordinationTone : 'info';
 }
 
-async function submitHistorySearch() {
+async function submitHistorySearch(options: { syncRoute?: boolean } = {}) {
   historyLoading.value = true;
   try {
     const [dateFrom, dateTo] = historyForm.dateRange;
     const [sessionSortBy, sessionSortDirection] = historyQuery.sessionSortValue.split('_');
     const [messageSortBy, messageSortDirection] = historyQuery.messageSortValue.split('_');
-    historyResult.value = await searchHistory({
+    const result = await searchHistory({
       keyword: historyForm.keyword || undefined,
       appType: historyForm.appType || undefined,
       projectPath: historyForm.projectPath || undefined,
@@ -192,7 +277,16 @@ async function submitHistorySearch() {
       messageSortBy,
       messageSortDirection
     });
+    historyResult.value = result;
+    historyQuery.sessionPageNo = result.sessions.pageNo;
+    historyQuery.sessionPageSize = result.sessions.pageSize;
+    historyQuery.messagePageNo = result.messages.pageNo;
+    historyQuery.messagePageSize = result.messages.pageSize;
     historySearched.value = true;
+    saveRecentHistorySearch();
+    if (options.syncRoute !== false) {
+      await syncHistoryRoute('push');
+    }
   } catch (error) {
     ElMessage.error((error as Error).message);
   } finally {
@@ -200,32 +294,13 @@ async function submitHistorySearch() {
   }
 }
 
-function resetHistorySearch() {
-  historyForm.keyword = '';
-  historyForm.appType = '';
-  historyForm.projectPath = '';
-  historyForm.dateRange = [];
-  historyQuery.sessionPageNo = 1;
-  historyQuery.sessionPageSize = 10;
-  historyQuery.sessionSortValue = 'lastMessageAt_desc';
-  historyQuery.messagePageNo = 1;
-  historyQuery.messagePageSize = 10;
-  historyQuery.messageSortValue = 'relevance_asc';
-  historyResult.value = {
-    sessions: {
-      items: [],
-      pageNo: 1,
-      pageSize: 10,
-      total: 0
-    },
-    messages: {
-      items: [],
-      pageNo: 1,
-      pageSize: 10,
-      total: 0
-    }
-  };
+async function resetHistorySearch() {
+  Object.assign(historyForm, createEmptyHistoryDraft());
+  resetHistoryQuery();
+  historyResult.value = createEmptyHistoryResult();
   historySearched.value = false;
+  clearHistoryDraft();
+  await syncHistoryRoute('push', omitHistoryRouteQuery(route.query));
 }
 
 function escapeHtml(value?: string | null) {
@@ -280,6 +355,459 @@ async function handleMessagePageSizeChange(pageSize: number) {
   historyQuery.messagePageNo = 1;
   await handleHistorySearch(false);
 }
+
+function resetHistoryQuery() {
+  Object.assign(historyQuery, DEFAULT_HISTORY_QUERY);
+}
+
+function getQueryStringValue(value: unknown) {
+  if (Array.isArray(value)) {
+    return typeof value[0] === 'string' ? value[0] : '';
+  }
+  return typeof value === 'string' ? value : '';
+}
+
+function parsePositiveInt(value: string, fallback: number) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function sanitizeHistorySortValue(
+  value: string,
+  allowedValues: Set<string>,
+  fallback: string
+) {
+  return allowedValues.has(value) ? value : fallback;
+}
+
+function buildHistoryDraft() {
+  return {
+    keyword: historyForm.keyword.trim(),
+    appType: historyForm.appType,
+    projectPath: historyForm.projectPath.trim(),
+    dateRange: [...historyForm.dateRange]
+  };
+}
+
+function hasHistoryDraftValue(draft: ReturnType<typeof buildHistoryDraft>) {
+  return Boolean(draft.keyword || draft.appType || draft.projectPath || draft.dateRange.length);
+}
+
+function persistHistoryDraft() {
+  const draft = buildHistoryDraft();
+  if (!hasHistoryDraftValue(draft)) {
+    clearHistoryDraft();
+    return;
+  }
+  window.localStorage.setItem(HISTORY_DRAFT_STORAGE_KEY, JSON.stringify(draft));
+}
+
+function clearHistoryDraft() {
+  window.localStorage.removeItem(HISTORY_DRAFT_STORAGE_KEY);
+}
+
+function restoreHistoryDraftFromStorage() {
+  const raw = window.localStorage.getItem(HISTORY_DRAFT_STORAGE_KEY);
+  if (!raw) {
+    return;
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<ReturnType<typeof buildHistoryDraft>>;
+    historyForm.keyword = typeof parsed.keyword === 'string' ? parsed.keyword : '';
+    historyForm.appType = typeof parsed.appType === 'string' ? parsed.appType : '';
+    historyForm.projectPath = typeof parsed.projectPath === 'string' ? parsed.projectPath : '';
+    historyForm.dateRange = Array.isArray(parsed.dateRange)
+      ? parsed.dateRange.filter((item): item is string => typeof item === 'string').slice(0, 2)
+      : [];
+  } catch {
+    clearHistoryDraft();
+  }
+}
+
+function buildHistoryReplayItem(): HistoryReplayItem {
+  return {
+    ...buildHistoryDraft(),
+    sessionSortValue: sanitizeHistorySortValue(
+      historyQuery.sessionSortValue,
+      allowedSessionSortValues,
+      DEFAULT_HISTORY_QUERY.sessionSortValue
+    ),
+    messageSortValue: sanitizeHistorySortValue(
+      historyQuery.messageSortValue,
+      allowedMessageSortValues,
+      DEFAULT_HISTORY_QUERY.messageSortValue
+    ),
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function normalizeHistoryReplayItem(value: Partial<HistoryReplayItem> | null | undefined): HistoryReplayItem | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const item: HistoryReplayItem = {
+    keyword: typeof value.keyword === 'string' ? value.keyword.trim() : '',
+    appType: typeof value.appType === 'string' ? value.appType : '',
+    projectPath: typeof value.projectPath === 'string' ? value.projectPath.trim() : '',
+    dateRange: Array.isArray(value.dateRange)
+      ? value.dateRange.filter((date): date is string => typeof date === 'string').slice(0, 2)
+      : [],
+    sessionSortValue: sanitizeHistorySortValue(
+      typeof value.sessionSortValue === 'string' ? value.sessionSortValue : '',
+      allowedSessionSortValues,
+      DEFAULT_HISTORY_QUERY.sessionSortValue
+    ),
+    messageSortValue: sanitizeHistorySortValue(
+      typeof value.messageSortValue === 'string' ? value.messageSortValue : '',
+      allowedMessageSortValues,
+      DEFAULT_HISTORY_QUERY.messageSortValue
+    ),
+    updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : new Date().toISOString()
+  };
+  return hasHistoryDraftValue(item) ? item : null;
+}
+
+function historyReplayKey(item: Pick<HistoryReplayItem, 'keyword' | 'appType' | 'projectPath' | 'dateRange' | 'sessionSortValue' | 'messageSortValue'>) {
+  return JSON.stringify({
+    keyword: item.keyword,
+    appType: item.appType,
+    projectPath: item.projectPath,
+    dateRange: item.dateRange,
+    sessionSortValue: item.sessionSortValue,
+    messageSortValue: item.messageSortValue
+  });
+}
+
+function persistRecentHistorySearches() {
+  if (!recentHistorySearches.value.length) {
+    window.localStorage.removeItem(HISTORY_RECENT_STORAGE_KEY);
+    return;
+  }
+  window.localStorage.setItem(HISTORY_RECENT_STORAGE_KEY, JSON.stringify(recentHistorySearches.value));
+}
+
+function loadRecentHistorySearches() {
+  const raw = window.localStorage.getItem(HISTORY_RECENT_STORAGE_KEY);
+  if (!raw) {
+    recentHistorySearches.value = [];
+    return;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    recentHistorySearches.value = Array.isArray(parsed)
+      ? parsed
+          .map((item) => normalizeHistoryReplayItem(item as Partial<HistoryReplayItem>))
+          .filter((item): item is HistoryReplayItem => Boolean(item))
+          .slice(0, MAX_RECENT_HISTORY_SEARCHES)
+      : [];
+  } catch {
+    recentHistorySearches.value = [];
+    window.localStorage.removeItem(HISTORY_RECENT_STORAGE_KEY);
+  }
+}
+
+function saveRecentHistorySearch() {
+  const nextItem = normalizeHistoryReplayItem(buildHistoryReplayItem());
+  if (!nextItem) {
+    return;
+  }
+  const nextKey = historyReplayKey(nextItem);
+  recentHistorySearches.value = [
+    nextItem,
+    ...recentHistorySearches.value.filter((item) => historyReplayKey(item) !== nextKey)
+  ].slice(0, MAX_RECENT_HISTORY_SEARCHES);
+  persistRecentHistorySearches();
+}
+
+function clearRecentHistorySearches() {
+  recentHistorySearches.value = [];
+  persistRecentHistorySearches();
+}
+
+function buildHistoryReplayComparableFromRouteQuery(query: typeof route.query): HistoryReplayComparable | null {
+  const hasHistoryState = getQueryStringValue(query.history) === '1'
+    || Array.from(HISTORY_ROUTE_KEYS).some((key) => Boolean(getQueryStringValue(query[key])));
+  if (!hasHistoryState) {
+    return null;
+  }
+
+  const dateFrom = getQueryStringValue(query.historyDateFrom);
+  const dateTo = getQueryStringValue(query.historyDateTo);
+  return {
+    keyword: getQueryStringValue(query.historyKeyword).trim(),
+    appType: getQueryStringValue(query.historyAppType),
+    projectPath: getQueryStringValue(query.historyProjectPath).trim(),
+    dateRange: dateFrom || dateTo ? [dateFrom, dateTo].filter(Boolean) : [],
+    sessionSortValue: sanitizeHistorySortValue(
+      getQueryStringValue(query.historySessionSort),
+      allowedSessionSortValues,
+      DEFAULT_HISTORY_QUERY.sessionSortValue
+    ),
+    messageSortValue: sanitizeHistorySortValue(
+      getQueryStringValue(query.historyMessageSort),
+      allowedMessageSortValues,
+      DEFAULT_HISTORY_QUERY.messageSortValue
+    )
+  };
+}
+
+function removeRecentHistorySearch(targetItem: HistoryReplayItem) {
+  const targetKey = historyReplayKey(targetItem);
+  recentHistorySearches.value = recentHistorySearches.value.filter(
+    (item) => historyReplayKey(item) !== targetKey
+  );
+  persistRecentHistorySearches();
+}
+
+function formatHistoryReplayPrimary(item: HistoryReplayItem) {
+  return item.keyword || '未填写关键词';
+}
+
+function formatHistoryReplayMeta(item: HistoryReplayItem) {
+  const parts = [
+    item.appType ? `类型：${item.appType}` : '类型：全部',
+    item.dateRange.length ? `日期：${item.dateRange.join(' ~ ')}` : '日期：全部'
+  ];
+  return parts.join(' · ');
+}
+
+function formatHistoryReplayUpdatedAt(updatedAt: string) {
+  const date = new Date(updatedAt);
+  if (Number.isNaN(date.getTime())) {
+    return '刚刚';
+  }
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  return `${year}-${month}-${day} ${hours}:${minutes}`;
+}
+
+function resolveSortLabel(
+  value: string,
+  options: ReadonlyArray<{ label: string; value: string }>
+) {
+  return options.find((item) => item.value === value)?.label || value;
+}
+
+function formatHistoryReplayTitle(item: HistoryReplayItem) {
+  return [
+    `关键词：${item.keyword || '未填写'}`,
+    `类型：${item.appType || '全部'}`,
+    `目录：${item.projectPath || '全部'}`,
+    `日期：${item.dateRange.length ? item.dateRange.join(' ~ ') : '全部'}`,
+    `会话排序：${resolveSortLabel(item.sessionSortValue, sessionSortOptions)}`,
+    `消息排序：${resolveSortLabel(item.messageSortValue, messageSortOptions)}`,
+    `最近执行：${formatHistoryReplayUpdatedAt(item.updatedAt)}`
+  ].join('\n');
+}
+
+function isRecentHistorySearchActive(item: HistoryReplayItem) {
+  const activeReplay = buildHistoryReplayComparableFromRouteQuery(route.query);
+  return Boolean(activeReplay) && historyReplayKey(activeReplay) === historyReplayKey(item);
+}
+
+async function applyRecentHistorySearch(item: HistoryReplayItem) {
+  historyForm.keyword = item.keyword;
+  historyForm.appType = item.appType;
+  historyForm.projectPath = item.projectPath;
+  historyForm.dateRange = [...item.dateRange];
+  historyQuery.sessionPageNo = 1;
+  historyQuery.sessionPageSize = DEFAULT_HISTORY_QUERY.sessionPageSize;
+  historyQuery.sessionSortValue = item.sessionSortValue;
+  historyQuery.messagePageNo = 1;
+  historyQuery.messagePageSize = DEFAULT_HISTORY_QUERY.messagePageSize;
+  historyQuery.messageSortValue = item.messageSortValue;
+  await submitHistorySearch();
+}
+
+function omitHistoryRouteQuery(query: typeof route.query) {
+  const nextQuery: Record<string, string | string[]> = {};
+  Object.entries(query).forEach(([key, value]) => {
+    if (HISTORY_ROUTE_KEYS.has(key) || key === 'from' || key === 'messageId') {
+      return;
+    }
+    if (typeof value === 'string') {
+      nextQuery[key] = value;
+    } else if (Array.isArray(value)) {
+      nextQuery[key] = value.filter((item): item is string => typeof item === 'string');
+    }
+  });
+  return nextQuery;
+}
+
+function buildHistoryRouteQuery() {
+  const query: Record<string, string> = {};
+  if (!historySearched.value) {
+    return query;
+  }
+  const sessionPageNo = historyResult.value.sessions.pageNo || historyQuery.sessionPageNo;
+  const sessionPageSize = historyResult.value.sessions.pageSize || historyQuery.sessionPageSize;
+  const messagePageNo = historyResult.value.messages.pageNo || historyQuery.messagePageNo;
+  const messagePageSize = historyResult.value.messages.pageSize || historyQuery.messagePageSize;
+
+  query.history = '1';
+  if (historyForm.keyword.trim()) {
+    query.historyKeyword = historyForm.keyword.trim();
+  }
+  if (historyForm.appType) {
+    query.historyAppType = historyForm.appType;
+  }
+  if (historyForm.projectPath.trim()) {
+    query.historyProjectPath = historyForm.projectPath.trim();
+  }
+  if (historyForm.dateRange[0]) {
+    query.historyDateFrom = historyForm.dateRange[0];
+  }
+  if (historyForm.dateRange[1]) {
+    query.historyDateTo = historyForm.dateRange[1];
+  }
+  if (sessionPageNo !== DEFAULT_HISTORY_QUERY.sessionPageNo) {
+    query.historySessionPageNo = String(sessionPageNo);
+  }
+  if (sessionPageSize !== DEFAULT_HISTORY_QUERY.sessionPageSize) {
+    query.historySessionPageSize = String(sessionPageSize);
+  }
+  if (historyQuery.sessionSortValue !== DEFAULT_HISTORY_QUERY.sessionSortValue) {
+    query.historySessionSort = historyQuery.sessionSortValue;
+  }
+  if (messagePageNo !== DEFAULT_HISTORY_QUERY.messagePageNo) {
+    query.historyMessagePageNo = String(messagePageNo);
+  }
+  if (messagePageSize !== DEFAULT_HISTORY_QUERY.messagePageSize) {
+    query.historyMessagePageSize = String(messagePageSize);
+  }
+  if (historyQuery.messageSortValue !== DEFAULT_HISTORY_QUERY.messageSortValue) {
+    query.historyMessageSort = historyQuery.messageSortValue;
+  }
+  return query;
+}
+
+function hasHistoryRouteState() {
+  return getQueryStringValue(route.query.history) === '1'
+    || Array.from(HISTORY_ROUTE_KEYS).some((key) => Boolean(getQueryStringValue(route.query[key])));
+}
+
+function normalizeQueryForCompare(query: Record<string, string | string[]>) {
+  return JSON.stringify(
+    Object.keys(query)
+      .sort()
+      .map((key) => [key, query[key]])
+  );
+}
+
+async function syncHistoryRoute(
+  mode: 'push' | 'replace',
+  baseQuery = omitHistoryRouteQuery(route.query)
+) {
+  const nextQuery = {
+    ...baseQuery,
+    ...buildHistoryRouteQuery()
+  };
+  const targetRoute = router.resolve({
+    name: 'sessions',
+    query: nextQuery
+  });
+  const currentQuery = omitHistoryRouteQuery(route.query);
+  Object.entries(route.query).forEach(([key, value]) => {
+    if (HISTORY_ROUTE_KEYS.has(key)) {
+      if (typeof value === 'string') {
+        currentQuery[key] = value;
+      } else if (Array.isArray(value)) {
+        currentQuery[key] = value.filter((item): item is string => typeof item === 'string');
+      }
+    }
+  });
+  if (normalizeQueryForCompare(nextQuery) === normalizeQueryForCompare(currentQuery)) {
+    return;
+  }
+
+  suppressHistoryRouteWatch = true;
+  try {
+    if (mode === 'push') {
+      window.history.pushState(window.history.state, '', targetRoute.href);
+    }
+    await router.replace(targetRoute);
+  } finally {
+    suppressHistoryRouteWatch = false;
+  }
+}
+
+async function restoreHistorySearchFromRoute() {
+  if (!hasHistoryRouteState()) {
+    return;
+  }
+
+  const dateFrom = getQueryStringValue(route.query.historyDateFrom);
+  const dateTo = getQueryStringValue(route.query.historyDateTo);
+  historyForm.keyword = getQueryStringValue(route.query.historyKeyword);
+  historyForm.appType = getQueryStringValue(route.query.historyAppType);
+  historyForm.projectPath = getQueryStringValue(route.query.historyProjectPath);
+  historyForm.dateRange = dateFrom || dateTo ? [dateFrom, dateTo] : [];
+  historyQuery.sessionPageNo = parsePositiveInt(
+    getQueryStringValue(route.query.historySessionPageNo),
+    DEFAULT_HISTORY_QUERY.sessionPageNo
+  );
+  historyQuery.sessionPageSize = parsePositiveInt(
+    getQueryStringValue(route.query.historySessionPageSize),
+    DEFAULT_HISTORY_QUERY.sessionPageSize
+  );
+  historyQuery.sessionSortValue = sanitizeHistorySortValue(
+    getQueryStringValue(route.query.historySessionSort),
+    allowedSessionSortValues,
+    DEFAULT_HISTORY_QUERY.sessionSortValue
+  );
+  historyQuery.messagePageNo = parsePositiveInt(
+    getQueryStringValue(route.query.historyMessagePageNo),
+    DEFAULT_HISTORY_QUERY.messagePageNo
+  );
+  historyQuery.messagePageSize = parsePositiveInt(
+    getQueryStringValue(route.query.historyMessagePageSize),
+    DEFAULT_HISTORY_QUERY.messagePageSize
+  );
+  historyQuery.messageSortValue = sanitizeHistorySortValue(
+    getQueryStringValue(route.query.historyMessageSort),
+    allowedMessageSortValues,
+    DEFAULT_HISTORY_QUERY.messageSortValue
+  );
+
+  await submitHistorySearch({ syncRoute: false });
+  await syncHistoryRoute('replace');
+}
+
+async function applyHistoryStateFromRoute() {
+  if (hasHistoryRouteState()) {
+    await restoreHistorySearchFromRoute();
+    return;
+  }
+
+  historySearched.value = false;
+  historyResult.value = createEmptyHistoryResult();
+  resetHistoryQuery();
+  Object.assign(historyForm, createEmptyHistoryDraft());
+  restoreHistoryDraftFromStorage();
+}
+
+watch(
+  () => [historyForm.keyword, historyForm.appType, historyForm.projectPath, ...historyForm.dateRange],
+  () => {
+    if (suppressHistoryRouteWatch) {
+      return;
+    }
+    persistHistoryDraft();
+  }
+);
+
+watch(
+  () => route.fullPath,
+  async () => {
+    if (suppressHistoryRouteWatch) {
+      return;
+    }
+    await applyHistoryStateFromRoute();
+  }
+);
 </script>
 
 <template>
@@ -345,6 +873,59 @@ async function handleMessagePageSizeChange(pageSize: number) {
           </el-col>
         </el-row>
       </el-form>
+      <div v-if="recentHistorySearches.length" class="history-replay-panel">
+        <div class="history-replay-head">
+          <span>最近检索</span>
+          <el-button link type="primary" @click="clearRecentHistorySearches">清空</el-button>
+        </div>
+        <div class="history-replay-list">
+          <div
+            v-for="item in recentHistorySearches"
+            :key="historyReplayKey(item)"
+            class="history-replay-item"
+            :class="{ 'history-replay-item--active': isRecentHistorySearchActive(item) }"
+          >
+            <button
+              type="button"
+              class="history-replay-item__main"
+              :title="formatHistoryReplayTitle(item)"
+              :aria-pressed="isRecentHistorySearchActive(item)"
+              @click="applyRecentHistorySearch(item)"
+            >
+              <div class="history-replay-item__title-row">
+                <span class="history-replay-item__title">{{ formatHistoryReplayPrimary(item) }}</span>
+                <div class="history-replay-item__title-actions">
+                  <span
+                    v-if="isRecentHistorySearchActive(item)"
+                    class="history-replay-item__status"
+                  >
+                    当前
+                  </span>
+                  <span class="history-replay-item__time">{{ formatHistoryReplayUpdatedAt(item.updatedAt) }}</span>
+                </div>
+              </div>
+              <div
+                v-if="item.projectPath"
+                class="history-replay-item__path"
+                :title="item.projectPath"
+              >
+                {{ item.projectPath }}
+              </div>
+              <div class="history-replay-item__meta" :title="formatHistoryReplayMeta(item)">
+                {{ formatHistoryReplayMeta(item) }}
+              </div>
+            </button>
+            <el-button
+              link
+              type="danger"
+              class="history-replay-item__remove"
+              @click="removeRecentHistorySearch(item)"
+            >
+              删除
+            </el-button>
+          </div>
+        </div>
+      </div>
     </el-card>
 
     <el-card v-if="historySearched" class="page-card" v-loading="historyLoading">
@@ -359,12 +940,7 @@ async function handleMessagePageSizeChange(pageSize: number) {
           <h3>会话命中</h3>
           <div class="result-actions">
             <el-select v-model="historyQuery.sessionSortValue" style="width: 180px" @change="handleHistorySearch(false)">
-              <el-option label="最近活跃优先" value="lastMessageAt_desc" />
-              <el-option label="最近活跃最早" value="lastMessageAt_asc" />
-              <el-option label="最新创建优先" value="createdAt_desc" />
-              <el-option label="最早创建优先" value="createdAt_asc" />
-              <el-option label="标题 A-Z" value="title_asc" />
-              <el-option label="标题 Z-A" value="title_desc" />
+              <el-option v-for="option in sessionSortOptions" :key="option.value" :label="option.label" :value="option.value" />
             </el-select>
           </div>
         </div>
@@ -408,11 +984,7 @@ async function handleMessagePageSizeChange(pageSize: number) {
           <h3>消息命中</h3>
           <div class="result-actions">
             <el-select v-model="historyQuery.messageSortValue" style="width: 180px" @change="handleHistorySearch(false)">
-              <el-option label="相关度优先" value="relevance_asc" />
-              <el-option label="最新消息优先" value="createdAt_desc" />
-              <el-option label="最早消息优先" value="createdAt_asc" />
-              <el-option label="序号从大到小" value="seqNo_desc" />
-              <el-option label="序号从小到大" value="seqNo_asc" />
+              <el-option v-for="option in messageSortOptions" :key="option.value" :label="option.label" :value="option.value" />
             </el-select>
           </div>
         </div>
@@ -587,5 +1159,127 @@ async function handleMessagePageSizeChange(pageSize: number) {
   margin-top: 6px;
   font-size: 12px;
   color: #64748b;
+}
+
+.history-replay-panel {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.history-replay-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #334155;
+}
+
+.history-replay-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 8px;
+}
+
+.history-replay-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 10px;
+  background: #fff;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.history-replay-item:hover {
+  border-color: rgba(59, 130, 246, 0.35);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
+}
+
+.history-replay-item--active {
+  border-color: rgba(59, 130, 246, 0.48);
+  background: linear-gradient(180deg, rgba(239, 246, 255, 0.9), #fff);
+  box-shadow: 0 10px 22px rgba(59, 130, 246, 0.12);
+}
+
+.history-replay-item__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.history-replay-item__title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.history-replay-item__title-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.history-replay-item__title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.history-replay-item__time {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.history-replay-item__status {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.12);
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.history-replay-item__path,
+.history-replay-item__meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.history-replay-item__path {
+  color: #475569;
+}
+
+.history-replay-item__meta {
+  color: #94a3b8;
+}
+
+.history-replay-item__remove {
+  flex-shrink: 0;
+  align-self: flex-start;
+  padding: 0;
 }
 </style>

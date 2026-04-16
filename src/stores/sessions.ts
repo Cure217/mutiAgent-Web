@@ -32,6 +32,11 @@ export const useSessionStore = defineStore('sessions', () => {
   const highlightedMessageId = ref<string | null>(null);
   const lastSessionError = ref<string | null>(null);
   let refreshTimer: number | null = null;
+  let listRefreshTimer: number | null = null;
+  let reconnectTimer: number | null = null;
+  let reconnectAttempt = 0;
+  let manualSocketDisconnect = false;
+  let socketPromise: Promise<WebSocket> | null = null;
 
   const currentSessionStatus = computed(() => currentSession.value?.status ?? 'UNKNOWN');
 
@@ -123,27 +128,82 @@ export const useSessionStore = defineStore('sessions', () => {
     if (socket.value) {
       return;
     }
-    socket.value = await createSessionSocket({
+    if (socketPromise) {
+      await socketPromise;
+      return;
+    }
+    manualSocketDisconnect = false;
+    clearReconnectTimer();
+    socketPromise = createSessionSocket({
       onMessage: handleSocketEvent,
       onOpen: () => {
         socketConnected.value = true;
+        reconnectAttempt = 0;
+        void loadList();
+        if (currentSession.value?.id) {
+          void loadDetail(currentSession.value.id, { messageId: highlightedMessageId.value });
+        }
       },
       onClose: () => {
         socketConnected.value = false;
         socket.value = null;
+        if (!manualSocketDisconnect) {
+          scheduleSocketReconnect();
+        }
       },
       onError: () => {
         socketConnected.value = false;
+        if (!manualSocketDisconnect) {
+          scheduleSocketReconnect();
+        }
       }
     });
+    try {
+      socket.value = await socketPromise;
+    } finally {
+      socketPromise = null;
+    }
   }
 
   function disconnectSocket() {
+    manualSocketDisconnect = true;
+    clearReconnectTimer();
+    clearListRefreshTimer();
     if (socket.value) {
       socket.value.close();
       socket.value = null;
     }
     socketConnected.value = false;
+  }
+
+  function clearReconnectTimer() {
+    if (reconnectTimer !== null) {
+      window.clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+  }
+
+  function clearListRefreshTimer() {
+    if (listRefreshTimer !== null) {
+      window.clearTimeout(listRefreshTimer);
+      listRefreshTimer = null;
+    }
+  }
+
+  function scheduleSocketReconnect() {
+    if (manualSocketDisconnect || socket.value || socketPromise || reconnectTimer !== null) {
+      return;
+    }
+    const delay = Math.min(5000, 500 * 2 ** Math.min(reconnectAttempt, 4));
+    reconnectAttempt += 1;
+    reconnectTimer = window.setTimeout(async () => {
+      reconnectTimer = null;
+      try {
+        await ensureSocket();
+      } catch {
+        scheduleSocketReconnect();
+      }
+    }, delay);
   }
 
   function handleSocketEvent(event: SessionEventEnvelope<Record<string, unknown>>) {
@@ -206,6 +266,7 @@ export const useSessionStore = defineStore('sessions', () => {
   }
 
   function syncSessionStatus(sessionId: string, status: string, exitReason?: string, exitCode?: number) {
+    const hasSessionInList = items.value.some((item) => item.id === sessionId);
     items.value = items.value.map((item) => (item.id === sessionId ? { ...item, status, exitReason, exitCode } : item));
     const nextItem = items.value.find((item) => item.id === sessionId)
       ?? (currentSession.value?.id === sessionId
@@ -235,9 +296,13 @@ export const useSessionStore = defineStore('sessions', () => {
         exitCode: exitCode ?? currentSession.value.exitCode
       };
     }
+    if (!hasSessionInList && currentSession.value?.id !== sessionId) {
+      scheduleListRefresh();
+    }
   }
 
   function syncWorkspaceSnapshot(sessionId: string, patch: Partial<AiSession>) {
+    const hasSessionInList = items.value.some((item) => item.id === sessionId);
     items.value = items.value.map((item) => (item.id === sessionId ? { ...item, ...patch } : item));
     runningItems.value = runningItems.value.map((item) => (item.id === sessionId ? { ...item, ...patch } : item));
     if (currentSession.value?.id === sessionId) {
@@ -245,6 +310,9 @@ export const useSessionStore = defineStore('sessions', () => {
         ...currentSession.value,
         ...patch
       };
+    }
+    if (!hasSessionInList && currentSession.value?.id !== sessionId) {
+      scheduleListRefresh();
     }
   }
 
@@ -411,6 +479,19 @@ export const useSessionStore = defineStore('sessions', () => {
       } catch {
       }
     }, 1800);
+  }
+
+  function scheduleListRefresh(delay = 600) {
+    if (listRefreshTimer !== null) {
+      window.clearTimeout(listRefreshTimer);
+    }
+    listRefreshTimer = window.setTimeout(async () => {
+      listRefreshTimer = null;
+      try {
+        await loadList();
+      } catch {
+      }
+    }, delay);
   }
 
   function isActiveSessionStatus(status?: string | null) {

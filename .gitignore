@@ -1,5 +1,7 @@
 node_modules
 dist
+make
+.desktop-bundle
 .vite
 coverage
 .idea

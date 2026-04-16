@@ -553,7 +553,7 @@ export function buildDispatchTaskPacket(options: DispatchPromptOptions): Dispatc
         items: [
           ...dependencyItems,
           `共享上下文范围：${sharedContextModeLabel}`,
-          ...sharedContextItems.map((item, index) => buildWorkspaceSnapshotLine(item, index))
+          ...sharedContextItems
         ],
         emptyText: '当前不注入额外共享上下文'
       },
