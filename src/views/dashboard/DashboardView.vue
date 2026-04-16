@@ -599,10 +599,12 @@ const summaryDraftPlaceholder = computed(() => {
   ].join('\n');
 });
 const architectHeadline = computed(() => {
-  if (!workspaceSummaries.value.length && !hasEnabledInstances.value) {
+  if (!hasEnabledInstances.value) {
     return {
       title: hasInstances.value ? '先启用一个应用实例' : '先创建一个应用实例',
-      description: '统一调度创建子窗口前需要一个已启用的应用实例。请先到应用实例管理创建或启用实例，再回来开始派单。',
+      description: workspaceSummaries.value.length
+        ? '当前还能查看已有子窗口，但因为没有启用实例，暂时无法继续新建或派发任务。请先到应用实例管理恢复一个可用实例。'
+        : '统一调度创建子窗口前需要一个已启用的应用实例。请先到应用实例管理创建或启用实例，再回来开始派单。',
       tone: 'warning' as const,
       actionLabel: '去应用实例管理',
       action: 'instances' as GuideAction
@@ -705,15 +707,17 @@ const focusEmptyTips = computed(() => !workspaceSummaries.value.length && !hasEn
     '需要继续推进时，再到右侧统一调度栏发送下一轮任务。'
   ]);
 const operatorGuide = computed(() => {
-  if (!workspaceSummaries.value.length && !hasEnabledInstances.value) {
+  if (!hasEnabledInstances.value) {
     return {
-      title: '第一次使用先准备应用实例',
-      description: '总控台负责派发子窗口，但创建子窗口前必须先有一个已启用的应用实例。',
+      title: workspaceSummaries.value.length ? '当前先恢复可用实例' : '第一次使用先准备应用实例',
+      description: workspaceSummaries.value.length
+        ? '你仍可以查看已有子窗口，但现在无法继续新建或派发任务；先恢复一个启用实例，再回来继续调度。'
+        : '总控台负责派发子窗口，但创建子窗口前必须先有一个已启用的应用实例。',
       tone: 'warning' as const,
       steps: [
         hasInstances.value ? '进入应用实例管理，启用一个可运行实例。' : '进入应用实例管理，创建并启用第一个实例。',
-        '回到总控台后选择角色、实例和任务说明。',
-        '点击“创建并派发”，生成第一个协作子窗口。'
+        workspaceSummaries.value.length ? '回到总控台后，先确认右侧实例选择已经恢复。' : '回到总控台后选择角色、实例和任务说明。',
+        workspaceSummaries.value.length ? '实例恢复后，再继续新建或派发任务。' : '点击“创建并派发”，生成第一个协作子窗口。'
       ],
       actionLabel: '去应用实例管理',
       action: 'instances' as GuideAction
