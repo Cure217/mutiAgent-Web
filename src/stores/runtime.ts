@@ -1,14 +1,15 @@
 import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
-import { fetchRuntimeHealth, fetchRuntimeProcesses, fetchRuntimeStatistics } from '@/api/runtime';
+import { fetchRuntimeAttachments, fetchRuntimeHealth, fetchRuntimeProcesses, fetchRuntimeStatistics } from '@/api/runtime';
 import { resolveBackendBaseUrl } from '@/api/http';
-import type { ProcessInfo, RuntimeHealth, RuntimeStatistics } from '@/types/runtime';
+import type { ProcessInfo, RuntimeAttachmentInfo, RuntimeHealth, RuntimeStatistics } from '@/types/runtime';
 
 export const useRuntimeStore = defineStore('runtime', () => {
   const backendBaseUrl = ref('http://127.0.0.1:18109');
   const health = ref<RuntimeHealth | null>(null);
   const statistics = ref<RuntimeStatistics | null>(null);
   const processes = ref<ProcessInfo[]>([]);
+  const attachments = ref<RuntimeAttachmentInfo[]>([]);
   const loading = ref(false);
   const backendAvailable = ref(false);
 
@@ -22,18 +23,21 @@ export const useRuntimeStore = defineStore('runtime', () => {
   async function refreshAll() {
     loading.value = true;
     try {
-      const [healthData, statisticsData, processesData] = await Promise.all([
+      const [healthData, statisticsData, processesData, attachmentData] = await Promise.all([
         fetchRuntimeHealth(),
         fetchRuntimeStatistics(),
-        fetchRuntimeProcesses()
+        fetchRuntimeProcesses(),
+        fetchRuntimeAttachments()
       ]);
       health.value = healthData;
       statistics.value = statisticsData;
       processes.value = processesData;
+      attachments.value = attachmentData;
       backendAvailable.value = true;
     } catch (error) {
       console.error(error);
       backendAvailable.value = false;
+      attachments.value = [];
     } finally {
       loading.value = false;
     }
@@ -44,6 +48,7 @@ export const useRuntimeStore = defineStore('runtime', () => {
     health,
     statistics,
     processes,
+    attachments,
     loading,
     backendAvailable,
     backendStatusText,

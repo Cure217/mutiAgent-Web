@@ -18,6 +18,17 @@ export interface RuntimeStatistics {
   observingSessionAttachmentCount: number;
 }
 
+export interface RuntimeAttachmentInfo {
+  transportSessionId: string;
+  clientId: string;
+  connectedAt: string;
+  lastHeartbeatAt: string;
+  observedTargetType?: string | null;
+  observedTargetId?: string | null;
+  userAgent?: string | null;
+  remoteAddress?: string | null;
+}
+
 export interface ProcessInfo {
   sessionId: string;
   pid: number;

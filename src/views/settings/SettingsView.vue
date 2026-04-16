@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ElMessage } from 'element-plus';
-import { onMounted, reactive } from 'vue';
+import { computed, onMounted, reactive } from 'vue';
 import { useConfigStore } from '@/stores/configs';
 import { useRuntimeStore } from '@/stores/runtime';
+import type { RuntimeAttachmentInfo } from '@/types/runtime';
 
 const runtimeStore = useRuntimeStore();
 const configStore = useConfigStore();
@@ -14,6 +15,12 @@ const form = reactive({
   defaultTerminalMode: 'raw',
   autoReconnect: false
 });
+
+const attachmentSummary = computed(() => ({
+  total: runtimeStore.statistics?.attachedClientCount ?? runtimeStore.attachments.length,
+  observing: runtimeStore.statistics?.observingSessionAttachmentCount
+    ?? runtimeStore.attachments.filter((item) => item.observedTargetId).length
+}));
 
 onMounted(async () => {
   await refreshPage();
@@ -112,6 +119,31 @@ function normalizeNumber(value: string, fallback: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
+
+function shortId(value?: string | null) {
+  if (!value) {
+    return '-';
+  }
+  return value.length > 12 ? `${value.slice(0, 12)}…` : value;
+}
+
+function formatTime(value?: string | null) {
+  if (!value) {
+    return '-';
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString();
+}
+
+function formatObservedTarget(attachment: RuntimeAttachmentInfo) {
+  if (!attachment.observedTargetId) {
+    return '未观察会话';
+  }
+  return `${attachment.observedTargetType || 'session'} / ${shortId(attachment.observedTargetId)}`;
+}
 </script>
 
 <template>
@@ -184,6 +216,53 @@ function normalizeNumber(value: string, fallback: number) {
     <el-row :gutter="16" style="margin-top: 16px;">
       <el-col :span="24">
         <el-card class="page-card">
+          <template #header>
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+              <span>运行时客户端观测</span>
+              <div style="display: flex; gap: 8px;">
+                <el-tag type="info">客户端 {{ attachmentSummary.total }}</el-tag>
+                <el-tag type="warning">观察会话 {{ attachmentSummary.observing }}</el-tag>
+              </div>
+            </div>
+          </template>
+          <el-table
+            :data="runtimeStore.attachments"
+            size="small"
+            border
+            empty-text="当前没有已连接客户端"
+            max-height="280"
+          >
+            <el-table-column label="客户端" min-width="180">
+              <template #default="{ row }">
+                <el-tooltip :content="row.clientId" placement="top">
+                  <span>{{ shortId(row.clientId) }}</span>
+                </el-tooltip>
+              </template>
+            </el-table-column>
+            <el-table-column label="观察目标" min-width="180">
+              <template #default="{ row }">
+                <el-tag :type="row.observedTargetId ? 'success' : 'info'">
+                  {{ formatObservedTarget(row) }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="连接时间" min-width="180">
+              <template #default="{ row }">{{ formatTime(row.connectedAt) }}</template>
+            </el-table-column>
+            <el-table-column label="最后心跳" min-width="180">
+              <template #default="{ row }">{{ formatTime(row.lastHeartbeatAt) }}</template>
+            </el-table-column>
+            <el-table-column label="远端地址" min-width="150">
+              <template #default="{ row }">{{ row.remoteAddress || '-' }}</template>
+            </el-table-column>
+          </el-table>
+        </el-card>
+      </el-col>
+    </el-row>
+
+    <el-row :gutter="16" style="margin-top: 16px;">
+      <el-col :span="24">
+        <el-card class="page-card">
           <template #header>当前说明</template>
           <el-alert
             title="系统设置页已接入 SQLite 配置表，可维护默认项目目录、默认 Shell、终端视图与自动重连策略。"
@@ -191,13 +270,13 @@ function normalizeNumber(value: string, fallback: number) {
             :closable="false"
           />
           <el-alert
-            title="默认项目目录会直接用于打开外部终端，并同步作为新建实例的默认工作目录。"
+            title="运行时客户端观测来自当前后端内存态 attachment，用于判断哪些前端、桌面端或自动化客户端正连接到后端。"
             type="info"
             :closable="false"
             style="margin-top: 12px;"
           />
           <el-alert
-            title="如果当前还没有保存默认项目目录，系统会自动回退到当前用户主目录，不再绑死开发机路径。"
+            title="attachment 列表不是持久化审计表；后端重启后会清空，关键 attach/detach/observe 事件会进入操作流水。"
             type="info"
             :closable="false"
             style="margin-top: 12px;"
