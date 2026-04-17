@@ -2512,6 +2512,13 @@ onBeforeUnmount(() => {
                     <el-button size="small" link @click="clearSummarySyncNotice">清除提示</el-button>
                   </div>
                 </div>
+                <div class="dispatch-quick-submit">
+                  <div class="dispatch-quick-submit__copy">
+                    <strong>{{ dispatchForm.mode === 'new' ? '新建协作子窗口' : '派单到既有子窗口' }}</strong>
+                    <span>{{ dispatchForm.mode === 'new' ? '补齐任务说明后可直接派发，成功后会自动聚焦新子窗口。' : '向目标子窗口追加调度，成功后会自动聚焦目标卡片。' }}</span>
+                  </div>
+                  <el-button :loading="dispatching" type="primary" :disabled="dispatchForm.mode === 'new' && !hasEnabledInstances" @click="handleDispatch">{{ dispatchForm.mode === 'new' ? '创建并派发' : '发送调度' }}</el-button>
+                </div>
                 <el-form label-width="84px">
                   <el-form-item label="调度方式"><el-radio-group v-model="dispatchForm.mode"><el-radio-button label="new" value="new">新建</el-radio-button><el-radio-button label="existing" value="existing">派单</el-radio-button></el-radio-group></el-form-item>
                   <el-form-item label="角色"><el-select v-model="dispatchForm.roleKey" style="width:100%"><el-option v-for="role in WORKSPACE_ROLES" :key="role.key" :label="`${role.emoji} ${role.label}`" :value="role.key" /></el-select></el-form-item>
@@ -2829,6 +2836,9 @@ onBeforeUnmount(() => {
 .workspace-editor-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .control-tabs :deep(.el-tabs__nav-wrap) { margin-bottom: 4px; }
 .control-tab-body { display: flex; flex-direction: column; gap: 16px; }
+.dispatch-quick-submit { position: sticky; top: 16px; z-index: 8; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-radius: 16px; border: 1px solid rgba(37, 99, 235, .16); background: linear-gradient(135deg, rgba(248, 250, 252, .98), rgba(239, 246, 255, .98)); box-shadow: 0 12px 24px rgba(37, 99, 235, .12); backdrop-filter: blur(12px); }
+.dispatch-quick-submit__copy { display: flex; flex-direction: column; gap: 4px; min-width: 0; color: #334155; font-size: 12px; line-height: 1.6; }
+.dispatch-quick-submit__copy strong { color: #0f172a; font-size: 14px; }
 .dispatch-instance-empty { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; font-size: 13px; line-height: 1.7; }
 .task-packet-card { padding: 14px; border-radius: 16px; background: rgba(37, 99, 235, .06); border: 1px solid rgba(37, 99, 235, .12); }
 .task-packet-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
@@ -2863,11 +2873,18 @@ onBeforeUnmount(() => {
 }
 @media (max-width: 1380px) {
   .architect-shell, .detail-meta, .workspace-grid, .workspace-relation-grid, .shared-context-source-grid, .dispatch-template-grid, .blocked-diagnosis-strip, .blocked-analysis-grid, .workspace-editor-grid, .task-packet-grid, .team-template-library-item__grid { grid-template-columns: minmax(0, 1fr); }
+  .architect-sidebar { order: -1; }
+  .architect-main { order: 0; }
   .architect-banner { grid-template-columns: minmax(0, 1fr); }
   .architect-banner__actions { align-items: flex-start; }
   .sidebar-card { position: static; }
+  .control-tab-body { padding-bottom: 92px; }
+  .dispatch-quick-submit { position: fixed; top: auto; right: auto; bottom: 24px; left: 264px; width: min(520px, calc(100vw - 312px)); }
 }
 @media (max-width: 960px) {
   .lane-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .control-tab-body { padding-bottom: 132px; }
+  .dispatch-quick-submit { right: 16px; bottom: 16px; left: 16px; width: auto; align-items: stretch; flex-direction: column; }
+  .dispatch-quick-submit .el-button { width: 100%; }
 }
 </style>
