@@ -223,6 +223,7 @@ const sessionBlockedDiagnosis = computed(() => {
   });
 });
 const canSend = computed(() => sessionStore.currentSessionStatus === 'RUNNING' && !!inputText.value.trim() && !sending.value);
+const canStop = computed(() => sessionStore.currentSessionStatus === 'RUNNING');
 const sendDisabledReason = computed(() => {
   if (sending.value) {
     return '消息发送中，请稍候';
@@ -664,6 +665,10 @@ async function handleTerminalResize(size: { cols: number; rows: number }) {
 }
 
 async function stop() {
+  if (!canStop.value) {
+    ElMessage.info('当前会话未运行，无需停止');
+    return;
+  }
   try {
     await sessionStore.stop(sessionId.value);
     ElMessage.success('停止命令已发送');
@@ -807,7 +812,7 @@ function navigateBack() {
           {{ sessionStore.socketConnected ? 'WebSocket 已连接' : 'WebSocket 未连接' }}
         </el-tag>
         <el-button @click="openRawLog">打开原始日志</el-button>
-        <el-button type="danger" @click="stop">停止会话</el-button>
+        <el-button type="danger" :disabled="!canStop" @click="stop">停止会话</el-button>
       </div>
     </div>
 
@@ -946,7 +951,7 @@ function navigateBack() {
               </div>
               <div class="technical-actions">
                 <el-button @click="openRawLog">打开原始日志</el-button>
-                <el-button type="danger" @click="stop">停止会话</el-button>
+                <el-button type="danger" :disabled="!canStop" @click="stop">停止会话</el-button>
               </div>
             </el-tab-pane>
           </el-tabs>
