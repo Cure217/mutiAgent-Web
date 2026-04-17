@@ -1998,7 +1998,7 @@ async function handleDispatch() {
       }), session.id);
       resetDispatchPacketFields();
       await sessionStore.loadList();
-      await selectWorkspace(session.id);
+      await focusWorkspace(session.id, 'running');
       return true;
     } else {
       if (!dispatchForm.targetSessionId) {
@@ -2032,7 +2032,7 @@ async function handleDispatch() {
         instructionSnippet: dispatchForm.instruction.slice(0, 400)
       }), dispatchForm.targetSessionId);
       resetDispatchPacketFields();
-      await selectWorkspace(dispatchForm.targetSessionId);
+      await focusWorkspace(dispatchForm.targetSessionId, 'running');
       return true;
     }
   } catch (error) {
