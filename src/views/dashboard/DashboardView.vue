@@ -34,11 +34,14 @@ import {
 import { pickPreferredInstanceId, rememberPreferredInstance, sortInstancesByPreference } from '@/utils/instancePreference';
 
 type WorkspaceLaneFilter = CoordinationState | 'all';
-type WorkspaceLogCategory = 'all' | 'dispatch' | 'status' | 'close';
+type WorkspaceLogCategory = 'all' | 'dispatch' | 'status' | 'runtime' | 'close';
 type GuideAction = 'dispatch' | 'summary' | 'logs' | 'source' | 'instances';
 type DispatchTemplateKey = 'continue' | 'handoff' | 'unblock';
 const TEAM_TEMPLATE_CONFIG_GROUP = 'architect';
 const TEAM_TEMPLATE_CONFIG_KEY = 'dispatchTemplateLibrary';
+const ARCHITECT_OPERATION_LOG_TARGET_TYPES = ['architect-console', 'client_attachment'];
+const WORKSPACE_DISPATCH_ACTIONS = ['workspace.created', 'workspace.dispatched', 'workspace.template.applied', 'summary.applied', 'summary.dispatched'];
+const RUNTIME_ATTACHMENT_ACTIONS = ['client.attach', 'client.detach', 'client.observe'];
 
 interface TeamDispatchTemplate {
   id: string;
@@ -132,7 +135,10 @@ const operationLogActionOptions = [
   { label: '关闭子窗口', value: 'workspace.closed' },
   { label: '生成汇总', value: 'summary.generated' },
   { label: '应用汇总', value: 'summary.applied' },
-  { label: '一键再派单', value: 'summary.dispatched' }
+  { label: '一键再派单', value: 'summary.dispatched' },
+  { label: '客户端连接', value: 'client.attach' },
+  { label: '客户端断开', value: 'client.detach' },
+  { label: '客户端切换观测', value: 'client.observe' }
 ];
 const summaryTemplateOptions = [
   { label: '继续执行', value: 'continue' as const },
@@ -144,6 +150,7 @@ const workspaceLogCategoryOptions = [
   { label: '全部', value: 'all' as WorkspaceLogCategory },
   { label: '派单', value: 'dispatch' as WorkspaceLogCategory },
   { label: '状态', value: 'status' as WorkspaceLogCategory },
+  { label: '运行时', value: 'runtime' as WorkspaceLogCategory },
   { label: '关闭', value: 'close' as WorkspaceLogCategory }
 ];
 const sharedContextModeOptions = [
@@ -291,13 +298,13 @@ const selectedWorkspaceLogs = computed(() => {
     return [] as OperationLogRecord[];
   }
   return operationLogs.value
-    .filter((item) => item.targetId === selectedWorkspace.value?.id)
+    .filter((item) => isWorkspaceRelatedLog(item, selectedWorkspace.value?.id))
     .slice(0, 4);
 });
 const displayedOperationLogs = computed(() => {
   const baseLogs = (!currentWorkspaceLogOnly.value || !selectedWorkspace.value)
     ? operationLogs.value
-    : operationLogs.value.filter((item) => item.targetId === selectedWorkspace.value?.id);
+    : operationLogs.value.filter((item) => isWorkspaceRelatedLog(item, selectedWorkspace.value?.id));
 
   if (!currentWorkspaceLogOnly.value || currentWorkspaceLogCategory.value === 'all') {
     return baseLogs;
@@ -1138,12 +1145,55 @@ function applyDispatchTemplatePayload(options: {
   ElMessage.success(options.successMessage);
 }
 
-function formatLogDetail(detailJson?: string | null) {
+function normalizeLogString(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function formatObservedTarget(type: string | null, id: string | null) {
+  if (!type || !id) {
+    return null;
+  }
+  return type === 'session' ? `观察会话：${id}` : `观察目标：${type} / ${id}`;
+}
+
+function formatRuntimeAttachmentLogDetail(log: OperationLogRecord, detail: Record<string, unknown>) {
+  const clientId = normalizeLogString(detail.clientId) ?? normalizeLogString(log.targetId);
+  const observedTargetType = normalizeLogString(detail.nextObservedTargetType)
+    ?? normalizeLogString(detail.observedTargetType)
+    ?? normalizeLogString(detail.previousObservedTargetType);
+  const observedTargetId = normalizeLogString(detail.nextObservedTargetId)
+    ?? normalizeLogString(detail.observedTargetId)
+    ?? normalizeLogString(detail.previousObservedTargetId);
+  const previousTargetId = normalizeLogString(detail.previousObservedTargetId);
+  const remoteAddress = normalizeLogString(detail.remoteAddress);
+  const transportSessionId = normalizeLogString(detail.transportSessionId);
+  const targetSummary = formatLogTarget(log);
+  const showClientInDetail = !(targetSummary && targetSummary.startsWith('客户端：'));
+  const pieces = [
+    showClientInDetail && clientId ? `客户端：${clientId}` : '',
+    log.action === 'client.observe' && previousTargetId && observedTargetId && previousTargetId !== observedTargetId
+      ? `切换：${previousTargetId} → ${observedTargetId}`
+      : (formatObservedTarget(observedTargetType, observedTargetId) ?? ''),
+    remoteAddress ? `远端：${remoteAddress}` : '',
+    transportSessionId ? `连接：${transportSessionId}` : ''
+  ].filter(Boolean);
+  return pieces.slice(0, 4).join(' ｜ ');
+}
+
+function formatLogDetail(logOrDetail?: OperationLogRecord | string | null) {
+  if (!logOrDetail) {
+    return '';
+  }
+  const detailJson = typeof logOrDetail === 'string' ? logOrDetail : logOrDetail.detailJson;
+  const log = typeof logOrDetail === 'string' ? null : logOrDetail;
   if (!detailJson) {
     return '';
   }
   try {
     const parsed = JSON.parse(detailJson) as Record<string, unknown>;
+    if (log && (log.targetType === 'client_attachment' || RUNTIME_ATTACHMENT_ACTIONS.includes(log.action))) {
+      return formatRuntimeAttachmentLogDetail(log, parsed);
+    }
     return Object.entries(parsed)
       .filter(([, value]) => value !== null && value !== undefined && value !== '')
       .slice(0, 4)
@@ -1166,7 +1216,7 @@ function parseLogDetail(detailJson?: string | null) {
 }
 
 function canApplyLogToDispatch(log: OperationLogRecord) {
-  return ['workspace.created', 'workspace.dispatched', 'workspace.template.applied', 'summary.applied', 'summary.dispatched'].includes(log.action);
+  return WORKSPACE_DISPATCH_ACTIONS.includes(log.action);
 }
 
 function applyLogToDispatch(log: OperationLogRecord) {
@@ -1241,9 +1291,11 @@ function buildBoardMeta(workspace: AgentWorkspaceSummary) {
 function matchesWorkspaceLogCategory(log: OperationLogRecord, category: WorkspaceLogCategory) {
   switch (category) {
     case 'dispatch':
-      return ['workspace.created', 'workspace.dispatched', 'workspace.template.applied', 'summary.applied', 'summary.dispatched'].includes(log.action);
+      return WORKSPACE_DISPATCH_ACTIONS.includes(log.action);
     case 'status':
       return log.action === 'workspace.meta.updated';
+    case 'runtime':
+      return RUNTIME_ATTACHMENT_ACTIONS.includes(log.action);
     case 'close':
       return log.action === 'workspace.closed';
     default:
@@ -1586,8 +1638,34 @@ function focusWorkspaceRelation(sessionId: string) {
   void focusWorkspace(targetWorkspace.id, targetWorkspace.coordinationState);
 }
 
+function resolveObservedWorkspaceIdFromLog(log: OperationLogRecord) {
+  const detail = parseLogDetail(log.detailJson);
+  const candidates = [
+    [detail.nextObservedTargetType, detail.nextObservedTargetId],
+    [detail.observedTargetType, detail.observedTargetId],
+    [detail.previousObservedTargetType, detail.previousObservedTargetId]
+  ] as const;
+  for (const [targetType, targetId] of candidates) {
+    if (normalizeLogString(targetType) === 'session' && normalizeLogString(targetId)) {
+      return normalizeLogString(targetId);
+    }
+  }
+  return null;
+}
+
+function resolveWorkspaceIdFromLog(log: OperationLogRecord) {
+  const directTargetId = normalizeLogString(log.targetId);
+  if (directTargetId && workspaceSummaries.value.some((item) => item.id === directTargetId)) {
+    return directTargetId;
+  }
+  if (log.targetType === 'client_attachment') {
+    return resolveObservedWorkspaceIdFromLog(log);
+  }
+  return null;
+}
+
 function resolveWorkspaceFromLog(log: OperationLogRecord) {
-  const targetId = log.targetId?.trim();
+  const targetId = resolveWorkspaceIdFromLog(log);
   if (!targetId) {
     return null;
   }
@@ -1608,8 +1686,25 @@ function focusWorkspaceFromLog(log: OperationLogRecord) {
   ElMessage.success(`已定位到 ${workspace.role.label} 子窗口`);
 }
 
+function isWorkspaceRelatedLog(log: OperationLogRecord, workspaceId?: string | null) {
+  return Boolean(workspaceId && resolveWorkspaceIdFromLog(log) === workspaceId);
+}
+
 function isRelatedLog(log: OperationLogRecord) {
-  return Boolean(selectedWorkspace.value && log.targetId === selectedWorkspace.value.id);
+  return isWorkspaceRelatedLog(log, selectedWorkspace.value?.id);
+}
+
+function formatLogTarget(log: OperationLogRecord) {
+  const workspaceId = resolveWorkspaceIdFromLog(log);
+  if (workspaceId) {
+    return `子窗口：${workspaceId}`;
+  }
+  if (log.targetType === 'client_attachment') {
+    const clientId = normalizeLogString(log.targetId);
+    return clientId ? `客户端：${clientId}` : '';
+  }
+  const targetId = normalizeLogString(log.targetId);
+  return targetId ? `目标：${targetId}` : '';
 }
 
 function clearSummarySyncNotice() {
@@ -1667,11 +1762,10 @@ async function loadOperationLogs() {
   logLoading.value = true;
   try {
     const page = await fetchOperationLogs({
-      targetType: 'architect-console',
+      targetType: ARCHITECT_OPERATION_LOG_TARGET_TYPES.join(','),
       action: logFilter.action || undefined,
-      operatorName: 'architect-window',
       pageNo: 1,
-      pageSize: 12
+      pageSize: 24
     });
     operationLogs.value = page.items;
     operationLogTotal.value = page.total;
@@ -2280,17 +2374,17 @@ onBeforeUnmount(() => {
           </div>
           <div class="focus-log-panel">
             <div class="card-head">
-              <strong>关联调度流水</strong>
+              <strong>关联操作流水</strong>
               <span class="meta-label">{{ selectedWorkspaceLogs.length }} 条最近记录</span>
             </div>
-            <el-empty v-if="selectedWorkspaceLogs.length === 0" description="当前聚焦子窗口还没有最近调度流水" :image-size="48" />
+            <el-empty v-if="selectedWorkspaceLogs.length === 0" description="当前聚焦子窗口还没有最近操作流水" :image-size="48" />
             <div v-else class="focus-log-list">
               <div v-for="log in selectedWorkspaceLogs" :key="log.id" class="focus-log-item">
                 <div class="card-head">
                   <strong>{{ log.action }}</strong>
                   <span class="meta-label">{{ log.createdAt }}</span>
                 </div>
-                <div v-if="formatLogDetail(log.detailJson)" class="lane-item-meta">{{ formatLogDetail(log.detailJson) }}</div>
+                <div v-if="formatLogDetail(log)" class="lane-item-meta">{{ formatLogDetail(log) }}</div>
                 <div class="focus-log-actions">
                   <el-button v-if="canApplyLogToDispatch(log)" size="small" @click="applyLogToDispatch(log)">回填派单</el-button>
                   <el-button size="small" link @click="openSessionDetail(selectedWorkspace.id)">打开详情</el-button>
@@ -2566,7 +2660,7 @@ onBeforeUnmount(() => {
                   </el-select>
                   <el-button size="small" :loading="logLoading" @click="loadOperationLogs">刷新日志</el-button>
                 </div>
-                <el-empty v-if="displayedOperationLogs.length === 0" :description="currentWorkspaceLogOnly && selectedWorkspace ? '当前子窗口暂无匹配日志' : '暂无调度日志'" />
+                <el-empty v-if="displayedOperationLogs.length === 0" :description="currentWorkspaceLogOnly && selectedWorkspace ? '当前子窗口暂无匹配日志' : '暂无操作日志'" />
                 <div v-else class="log-list-shell">
                   <div class="meta-label">当前显示 {{ displayedOperationLogs.length }} 条{{ currentWorkspaceLogOnly ? `（最近总计 ${operationLogs.length} 条）` : ` / 共 ${operationLogTotal} 条` }}</div>
                   <div v-for="log in displayedOperationLogs" :key="log.id" class="board-item board-item--log" :class="{ 'is-related': isRelatedLog(log) }">
@@ -2575,8 +2669,8 @@ onBeforeUnmount(() => {
                       <el-tag size="small" :type="log.result === 'success' ? 'success' : 'danger'">{{ log.result }}</el-tag>
                     </div>
                     <div class="meta-label">{{ log.operatorName }} · {{ log.createdAt }}</div>
-                    <div v-if="log.targetId" class="meta-label">目标：{{ log.targetId }}</div>
-                    <div v-if="formatLogDetail(log.detailJson)" class="lane-item-meta">{{ formatLogDetail(log.detailJson) }}</div>
+                    <div v-if="formatLogTarget(log)" class="meta-label">{{ formatLogTarget(log) }}</div>
+                    <div v-if="formatLogDetail(log)" class="lane-item-meta">{{ formatLogDetail(log) }}</div>
                     <div class="log-actions">
                       <el-button v-if="canFocusLogTarget(log)" size="small" link type="primary" @click="focusWorkspaceFromLog(log)">定位子窗口</el-button>
                       <el-button v-if="canApplyLogToDispatch(log)" size="small" @click="applyLogToDispatch(log)">回填派单</el-button>
