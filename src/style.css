@@ -28,6 +28,10 @@ body {
   background: linear-gradient(180deg, #111827 0%, #0f172a 100%);
   color: #fff;
   border-right: 1px solid rgba(255, 255, 255, 0.08);
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
 }
 
 .brand-block {
