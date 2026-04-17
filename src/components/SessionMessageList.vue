@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, watch } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import type { MessageRecord } from '@/types/api';
 import { cleanupCodexTuiMessage, normalizeMessageText } from '@/utils/text';
 
@@ -188,12 +188,18 @@ const presentation = computed<MessagePresentation>(() => {
 
 const visibleMessages = computed(() => presentation.value.items);
 const hiddenRawCount = computed(() => presentation.value.hiddenRawCount);
+const messageListRef = ref<HTMLDivElement | null>(null);
 
 function scrollToLatestMessage() {
   nextTick(() => {
-    const messageElements = document.querySelectorAll('.message-card');
-    const lastElement = messageElements.item(messageElements.length - 1) as HTMLElement | null;
-    lastElement?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    const container = messageListRef.value;
+    if (!container) {
+      return;
+    }
+    container.scrollTo({
+      top: container.scrollHeight,
+      behavior: 'smooth'
+    });
   });
 }
 
@@ -203,10 +209,19 @@ function scrollToHighlightedMessage() {
     return;
   }
   nextTick(() => {
+    const container = messageListRef.value;
     const element = document.getElementById(`message-${props.highlightMessageId}`);
-    if (element) {
-      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (!container || !element) {
+      scrollToLatestMessage();
+      return;
     }
+    const containerRect = container.getBoundingClientRect();
+    const elementRect = element.getBoundingClientRect();
+    const nextTop = container.scrollTop + (elementRect.top - containerRect.top) - (container.clientHeight / 2) + (element.clientHeight / 2);
+    container.scrollTo({
+      top: Math.max(0, nextTop),
+      behavior: 'smooth'
+    });
   });
 }
 
@@ -230,7 +245,7 @@ watch(
       show-icon
       :title="`已隐藏 ${hiddenRawCount} 条明显原始回显/终端噪音；完整内容可在“辅助观察区 · 原始终端”查看。`"
     />
-    <div class="message-list">
+    <div ref="messageListRef" class="message-list">
       <div
         v-for="message in visibleMessages"
         :key="message.id"

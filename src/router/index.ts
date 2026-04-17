@@ -2,6 +2,15 @@ import { createRouter, createWebHashHistory } from 'vue-router';
 
 const router = createRouter({
   history: createWebHashHistory(),
+  scrollBehavior(to, from, savedPosition) {
+    if (savedPosition) {
+      return savedPosition;
+    }
+    if (to.path === from.path) {
+      return false;
+    }
+    return { top: 0, left: 0 };
+  },
   routes: [
     {
       path: '/',
