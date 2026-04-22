@@ -15,9 +15,20 @@ const menuItems = [
 ];
 
 const backendStatusType = computed(() => (runtimeStore.backendAvailable ? 'success' : 'danger'));
+const diagnosticsButtonType = computed(() => (runtimeStore.backendAvailable ? '' : 'warning'));
 const activeMenu = computed(() => route.path);
 const attachedClientCountText = computed(() => runtimeStore.statistics?.attachedClientCount ?? '-');
 const observingSessionAttachmentCountText = computed(() => runtimeStore.statistics?.observingSessionAttachmentCount ?? '-');
+const canOpenAppLog = computed(() => Boolean(runtimeStore.health?.appLogPath && window.desktopBridge));
+const runtimeDiagnosticsTip = computed(() => {
+  if (runtimeStore.backendAvailable) {
+    const uptime = formatDuration(runtimeStore.health?.uptimeMs);
+    return `后端运行中${uptime === '-' ? '' : `，已运行 ${uptime}`}。点击查看运行时诊断。`;
+  }
+  return runtimeStore.lastRefreshError
+    ? `后端不可用：${runtimeStore.lastRefreshError}。点击查看恢复指引。`
+    : '后端不可用。点击查看恢复指引。';
+});
 
 onMounted(async () => {
   await runtimeStore.initialize();
@@ -25,6 +36,34 @@ onMounted(async () => {
 
 function navigate(path: string) {
   router.push(path);
+}
+
+function openRuntimeDiagnostics() {
+  router.push('/settings');
+}
+
+async function openAppLog() {
+  const appLogPath = runtimeStore.health?.appLogPath;
+  if (!appLogPath || !window.desktopBridge) {
+    return;
+  }
+  await window.desktopBridge.openPath(appLogPath);
+}
+
+function formatDuration(ms?: number | null) {
+  if (!Number.isFinite(ms ?? Number.NaN)) {
+    return '-';
+  }
+  const totalSeconds = Math.max(0, Math.floor((ms ?? 0) / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  if (hours > 0) {
+    return `${hours}小时${minutes}分钟`;
+  }
+  if (minutes > 0) {
+    return `${minutes}分钟`;
+  }
+  return `${totalSeconds}秒`;
 }
 </script>
 
@@ -54,6 +93,12 @@ function navigate(path: string) {
           <el-tag :type="backendStatusType">{{ runtimeStore.backendStatusText }}</el-tag>
           <el-tag v-if="runtimeStore.backendAvailable" type="info">客户端 {{ attachedClientCountText }}</el-tag>
           <el-tag v-if="runtimeStore.backendAvailable" type="warning">观察会话 {{ observingSessionAttachmentCountText }}</el-tag>
+          <el-tooltip :content="runtimeDiagnosticsTip" placement="bottom">
+            <el-button size="small" :type="diagnosticsButtonType" @click="openRuntimeDiagnostics">
+              诊断
+            </el-button>
+          </el-tooltip>
+          <el-button v-if="canOpenAppLog" size="small" @click="openAppLog">打开日志</el-button>
           <el-button size="small" @click="runtimeStore.refreshAll">刷新状态</el-button>
         </div>
       </el-header>

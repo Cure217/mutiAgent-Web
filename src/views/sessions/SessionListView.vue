@@ -20,6 +20,7 @@ const dialogVisible = ref(false);
 const historyLoading = ref(false);
 const historySearched = ref(false);
 const historyResult = ref<HistorySearchResult>(createEmptyHistoryResult());
+const recoveringInstanceEntry = ref(false);
 const HISTORY_DRAFT_STORAGE_KEY = 'muti-agent:session-history-draft:v1';
 const HISTORY_RECENT_STORAGE_KEY = 'muti-agent:session-history-recent:v1';
 const MAX_RECENT_HISTORY_SEARCHES = 5;
@@ -129,6 +130,9 @@ const recentHistorySearches = ref<HistoryReplayItem[]>([]);
 const hasInstances = computed(() => instanceStore.items.length > 0);
 const enabledInstances = computed(() => sortInstancesByPreference(instanceStore.items.filter((item) => item.enabled)));
 const hasEnabledInstances = computed(() => enabledInstances.value.length > 0);
+const recoverInstanceActionLabel = computed(() =>
+  hasInstances.value ? '一键启用首个实例' : '一键创建默认 Codex 实例'
+);
 const createSessionActionLabel = computed(() => {
   if (hasEnabledInstances.value) {
     return '新建会话';
@@ -211,11 +215,29 @@ function handleCreateSessionAction() {
     openCreateDialog();
     return;
   }
-  openInstanceAdmin();
+  void handleQuickRecoverInstance(true);
 }
 
 function handleAppInstanceChange(value: string) {
   rememberPreferredInstance(value);
+}
+
+async function handleQuickRecoverInstance(openCreateAfterReady = false) {
+  recoveringInstanceEntry.value = true;
+  try {
+    const recovered = await instanceStore.recoverUsableInstance(configStore.defaultProjectPath);
+    rememberPreferredInstance(recovered.instance.id);
+    ElMessage.success(recovered.action === 'created'
+      ? '已创建默认 Codex 实例，可继续新建会话'
+      : '已恢复可用实例，可继续新建会话');
+    if (openCreateAfterReady) {
+      openCreateDialog();
+    }
+  } catch (error) {
+    ElMessage.error((error as Error).message);
+  } finally {
+    recoveringInstanceEntry.value = false;
+  }
 }
 
 async function submit() {
@@ -857,7 +879,7 @@ watch(
       <h2>会话管理</h2>
       <div class="page-toolbar">
         <el-button @click="sessionStore.loadList">刷新列表</el-button>
-        <el-button type="primary" @click="handleCreateSessionAction">{{ createSessionActionLabel }}</el-button>
+        <el-button type="primary" :loading="recoveringInstanceEntry" @click="handleCreateSessionAction">{{ createSessionActionLabel }}</el-button>
       </div>
     </div>
 
@@ -870,7 +892,8 @@ watch(
         :closable="false"
       />
       <div class="entry-guide__actions">
-        <el-button size="small" type="primary" @click="openInstanceAdmin">去应用实例管理</el-button>
+        <el-button size="small" type="primary" :loading="recoveringInstanceEntry" @click="handleQuickRecoverInstance(true)">{{ recoverInstanceActionLabel }}</el-button>
+        <el-button size="small" @click="openInstanceAdmin">去应用实例管理</el-button>
       </div>
     </div>
 

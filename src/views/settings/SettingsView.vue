@@ -3,7 +3,7 @@ import { ElMessage } from 'element-plus';
 import { computed, onMounted, reactive } from 'vue';
 import { useConfigStore } from '@/stores/configs';
 import { useRuntimeStore } from '@/stores/runtime';
-import type { RuntimeAttachmentInfo } from '@/types/runtime';
+import type { RuntimeAttachmentInfo, RuntimeLifecycleEventInfo } from '@/types/runtime';
 
 const runtimeStore = useRuntimeStore();
 const configStore = useConfigStore();
@@ -21,6 +21,23 @@ const attachmentSummary = computed(() => ({
   observing: runtimeStore.statistics?.observingSessionAttachmentCount
     ?? runtimeStore.attachments.filter((item) => item.observedTargetId).length
 }));
+
+const recentLifecycleEvents = computed(() => runtimeStore.health?.recentLifecycleEvents ?? []);
+const canOpenAppLog = computed(() => Boolean(runtimeStore.health?.appLogPath && window.desktopBridge));
+const backendRecoveryHint = computed(() => {
+  const parts = [
+    `当前无法连接 ${runtimeStore.backendBaseUrl}。`,
+    '优先在项目根目录执行：powershell -ExecutionPolicy Bypass -File scripts/start-backend.ps1。',
+    '如果 18109 已被非脚本托管进程占用，请先确认该进程来源，避免误杀。'
+  ];
+  if (runtimeStore.health?.appLogPath) {
+    parts.push(`上次已知应用日志：${runtimeStore.health.appLogPath}`);
+  }
+  if (runtimeStore.lastRefreshError) {
+    parts.push(`最近错误：${runtimeStore.lastRefreshError}`);
+  }
+  return parts.join(' ');
+});
 
 onMounted(async () => {
   await refreshPage();
@@ -52,6 +69,14 @@ async function openBaseDir() {
     return;
   }
   await window.desktopBridge.openPath(baseDir);
+}
+
+async function openAppLog() {
+  const appLogPath = runtimeStore.health?.appLogPath;
+  if (!appLogPath || !window.desktopBridge) {
+    return;
+  }
+  await window.desktopBridge.openPath(appLogPath);
 }
 
 async function openExternalTerminal() {
@@ -138,6 +163,40 @@ function formatTime(value?: string | null) {
   return date.toLocaleString();
 }
 
+function formatDuration(ms?: number | null) {
+  if (!Number.isFinite(ms ?? Number.NaN)) {
+    return '-';
+  }
+  const totalSeconds = Math.max(0, Math.floor((ms ?? 0) / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) {
+    return `${hours}小时 ${minutes}分钟`;
+  }
+  if (minutes > 0) {
+    return `${minutes}分钟 ${seconds}秒`;
+  }
+  return `${seconds}秒`;
+}
+
+function formatLifecycleEventType(type?: string | null) {
+  if (type === 'process_exit') {
+    return '进程退出';
+  }
+  if (type === 'supervisor_error') {
+    return '托管错误';
+  }
+  return type || '-';
+}
+
+function formatLifecycleEventSummary(event: RuntimeLifecycleEventInfo) {
+  if (event.type === 'process_exit') {
+    return `${event.status || '-'} / exitCode=${event.exitCode ?? '-'} / ${event.exitReason || '无退出说明'}`;
+  }
+  return event.message || '-';
+}
+
 function formatObservedTarget(attachment: RuntimeAttachmentInfo) {
   if (!attachment.observedTargetId) {
     return '未观察会话';
@@ -156,6 +215,14 @@ function formatObservedTarget(attachment: RuntimeAttachmentInfo) {
       </div>
     </div>
 
+    <el-alert
+      v-if="!runtimeStore.backendAvailable"
+      :title="backendRecoveryHint"
+      type="warning"
+      :closable="false"
+      style="margin-bottom: 16px;"
+    />
+
     <el-row :gutter="16">
       <el-col :span="12">
         <el-card class="page-card">
@@ -164,15 +231,30 @@ function formatObservedTarget(attachment: RuntimeAttachmentInfo) {
             <el-descriptions-item label="后端地址">
               {{ runtimeStore.backendBaseUrl }}
             </el-descriptions-item>
+            <el-descriptions-item label="启动时间">
+              {{ formatTime(runtimeStore.health?.startedAt) }}
+            </el-descriptions-item>
+            <el-descriptions-item label="运行时长">
+              {{ formatDuration(runtimeStore.health?.uptimeMs) }}
+            </el-descriptions-item>
             <el-descriptions-item label="运行目录">
               {{ runtimeStore.health?.baseDir ?? '-' }}
+            </el-descriptions-item>
+            <el-descriptions-item label="运行时状态目录">
+              {{ runtimeStore.health?.runtimeDir ?? '-' }}
             </el-descriptions-item>
             <el-descriptions-item label="数据库">
               {{ runtimeStore.health?.dbPath ?? '-' }}
             </el-descriptions-item>
+            <el-descriptions-item label="应用日志">
+              {{ runtimeStore.health?.appLogPath ?? '-' }}
+            </el-descriptions-item>
           </el-descriptions>
           <div style="margin-top: 16px; display: flex; gap: 12px;">
             <el-button @click="openBaseDir">打开运行目录</el-button>
+            <el-button :disabled="!canOpenAppLog" @click="openAppLog">
+              打开应用日志
+            </el-button>
             <el-button type="primary" @click="openExternalTerminal">打开外部终端</el-button>
           </div>
         </el-card>
@@ -209,6 +291,49 @@ function formatObservedTarget(attachment: RuntimeAttachmentInfo) {
               <el-switch v-model="form.autoReconnect" />
             </el-form-item>
           </el-form>
+        </el-card>
+      </el-col>
+    </el-row>
+
+    <el-row :gutter="16" style="margin-top: 16px;">
+      <el-col :span="24">
+        <el-card class="page-card">
+          <template #header>运行时诊断摘要</template>
+          <el-table
+            :data="recentLifecycleEvents"
+            size="small"
+            border
+            empty-text="暂无托管错误或进程退出记录"
+            max-height="260"
+          >
+            <el-table-column label="时间" min-width="180">
+              <template #default="{ row }">{{ formatTime(row.observedAt) }}</template>
+            </el-table-column>
+            <el-table-column label="类型" width="120">
+              <template #default="{ row }">
+                <el-tag :type="row.type === 'supervisor_error' ? 'danger' : 'info'">
+                  {{ formatLifecycleEventType(row.type) }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="会话" width="150">
+              <template #default="{ row }">
+                <el-tooltip v-if="row.sessionId" :content="row.sessionId" placement="top">
+                  <span>{{ shortId(row.sessionId) }}</span>
+                </el-tooltip>
+                <span v-else>-</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="摘要" min-width="360">
+              <template #default="{ row }">{{ formatLifecycleEventSummary(row) }}</template>
+            </el-table-column>
+          </el-table>
+          <el-alert
+            title="这些诊断来自当前后端内存态，用于快速判断最近的进程退出或 supervisor 错误；完整排查仍以应用日志为准。"
+            type="info"
+            :closable="false"
+            style="margin-top: 12px;"
+          />
         </el-card>
       </el-col>
     </el-row>

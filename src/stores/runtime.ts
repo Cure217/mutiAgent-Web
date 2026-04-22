@@ -12,6 +12,7 @@ export const useRuntimeStore = defineStore('runtime', () => {
   const attachments = ref<RuntimeAttachmentInfo[]>([]);
   const loading = ref(false);
   const backendAvailable = ref(false);
+  const lastRefreshError = ref('');
 
   const backendStatusText = computed(() => (backendAvailable.value ? '后端在线' : '后端离线'));
 
@@ -34,10 +35,12 @@ export const useRuntimeStore = defineStore('runtime', () => {
       processes.value = processesData;
       attachments.value = attachmentData;
       backendAvailable.value = true;
+      lastRefreshError.value = '';
     } catch (error) {
       console.error(error);
       backendAvailable.value = false;
       attachments.value = [];
+      lastRefreshError.value = error instanceof Error ? error.message : String(error);
     } finally {
       loading.value = false;
     }
@@ -51,6 +54,7 @@ export const useRuntimeStore = defineStore('runtime', () => {
     attachments,
     loading,
     backendAvailable,
+    lastRefreshError,
     backendStatusText,
     initialize,
     refreshAll

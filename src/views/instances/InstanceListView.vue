@@ -13,6 +13,8 @@ const DEFAULT_CODEX_YOLO_ARG = '--dangerously-bypass-approvals-and-sandbox';
 const keyword = ref('');
 const dialogVisible = ref(false);
 const editingId = ref<string | null>(null);
+const instancesLoaded = ref(false);
+const recoveringInstanceEntry = ref(false);
 
 const form = reactive({
   name: '',
@@ -43,9 +45,39 @@ const isCodexLaunch = computed(() => {
     || normalizedCommand === 'codex'
     || normalizedCommand === 'codex.cmd';
 });
+const hasEnabledInstances = computed(() => instanceStore.items.some((item) => item.enabled));
+const isFilteringInstances = computed(() => keyword.value.trim().length > 0);
+const showInstanceRecovery = computed(() =>
+  instancesLoaded.value
+  && (!instanceStore.loading || recoveringInstanceEntry.value)
+  && !hasEnabledInstances.value
+);
+const recoverInstanceActionLabel = computed(() => {
+  if (isFilteringInstances.value) {
+    return '恢复可用实例';
+  }
+  return instanceStore.items.length > 0 ? '一键启用首个实例' : '一键创建默认 Codex 实例';
+});
+const recoverInstanceTitle = computed(() =>
+  instanceStore.items.length > 0
+    ? '当前没有启用的应用实例'
+    : '当前还没有应用实例'
+);
+const recoverInstanceDescription = computed(() => {
+  if (isFilteringInstances.value) {
+    return '将先退出当前搜索过滤并刷新完整实例列表，再恢复一个可用于创建会话和派单的实例。';
+  }
+  return instanceStore.items.length > 0
+    ? '可以直接启用首个现有实例，恢复后总控台和会话管理页即可继续使用。'
+    : '可以直接创建一份默认 Codex 实例，后续仍可在本页编辑参数或测试启动。';
+});
 
 onMounted(async () => {
-  await Promise.all([instanceStore.load(), configStore.load()]);
+  try {
+    await Promise.all([instanceStore.load(), configStore.load()]);
+  } finally {
+    instancesLoaded.value = true;
+  }
 });
 
 watch(
@@ -164,6 +196,27 @@ async function testLaunch(instance: AppInstance) {
   }
 }
 
+async function handleQuickRecoverInstance() {
+  if (recoveringInstanceEntry.value) {
+    return;
+  }
+  recoveringInstanceEntry.value = true;
+  keyword.value = '';
+  try {
+    const recovered = await instanceStore.recoverUsableInstance(configStore.defaultProjectPath);
+    const actionMessage = {
+      existing: '已存在可用实例',
+      enabled: '已启用实例',
+      created: '已创建并启用默认实例'
+    }[recovered.action];
+    ElMessage.success(`${actionMessage}：${recovered.instance.name}`);
+  } catch (error) {
+    ElMessage.error((error as Error).message);
+  } finally {
+    recoveringInstanceEntry.value = false;
+  }
+}
+
 async function chooseDirectory() {
   if (!window.desktopBridge) {
     return;
@@ -247,11 +300,29 @@ function escapeHtml(value: string) {
       <div class="page-toolbar">
         <el-input v-model="keyword" placeholder="按名称搜索" clearable style="width: 240px" />
         <el-button @click="instanceStore.load(keyword)">查询</el-button>
+        <el-button
+          v-if="showInstanceRecovery"
+          type="warning"
+          plain
+          :loading="recoveringInstanceEntry"
+          @click="handleQuickRecoverInstance"
+        >
+          {{ recoverInstanceActionLabel }}
+        </el-button>
         <el-button type="primary" @click="openCreateDialog">新建实例</el-button>
       </div>
     </div>
 
     <el-card class="page-card">
+      <div v-if="showInstanceRecovery" class="instance-recovery-panel">
+        <div>
+          <div class="instance-recovery-title">{{ recoverInstanceTitle }}</div>
+          <div class="instance-recovery-description">{{ recoverInstanceDescription }}</div>
+        </div>
+        <el-button type="primary" :loading="recoveringInstanceEntry" @click="handleQuickRecoverInstance">
+          {{ recoverInstanceActionLabel }}
+        </el-button>
+      </div>
       <el-table :data="instanceStore.items" v-loading="instanceStore.loading">
         <el-table-column prop="name" label="实例名称" min-width="180" />
         <el-table-column prop="appType" label="应用类型" width="120" />
@@ -371,3 +442,28 @@ function escapeHtml(value: string) {
     </el-dialog>
   </div>
 </template>
+
+<style scoped>
+.instance-recovery-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border: 1px solid #fde68a;
+  border-radius: 12px;
+  background: #fffbeb;
+}
+
+.instance-recovery-title {
+  font-weight: 600;
+  color: #92400e;
+}
+
+.instance-recovery-description {
+  margin-top: 4px;
+  color: #92400e;
+  font-size: 13px;
+}
+</style>

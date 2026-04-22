@@ -7,6 +7,7 @@ import SessionMessageList from '@/components/SessionMessageList.vue';
 import SessionTimelineList from '@/components/SessionTimelineList.vue';
 import StatusTag from '@/components/StatusTag.vue';
 import { createOperationLog, fetchOperationLogs } from '@/api/operationLog';
+import { applyWorkspaceSummary, dispatchWorkspaceCreate, dispatchWorkspaceExisting } from '@/api/workspaceCommand';
 import { useConfigStore } from '@/stores/configs';
 import { useInstanceStore } from '@/stores/instances';
 import { useRuntimeStore } from '@/stores/runtime';
@@ -35,12 +36,13 @@ import { pickPreferredInstanceId, rememberPreferredInstance, sortInstancesByPref
 
 type WorkspaceLaneFilter = CoordinationState | 'all';
 type WorkspaceLogCategory = 'all' | 'dispatch' | 'status' | 'runtime' | 'close';
-type GuideAction = 'dispatch' | 'summary' | 'logs' | 'source' | 'instances';
+type GuideAction = 'dispatch' | 'summary' | 'logs' | 'source' | 'instances' | 'recover-instance';
 type DispatchTemplateKey = 'continue' | 'handoff' | 'unblock';
 const TEAM_TEMPLATE_CONFIG_GROUP = 'architect';
 const TEAM_TEMPLATE_CONFIG_KEY = 'dispatchTemplateLibrary';
-const ARCHITECT_OPERATION_LOG_TARGET_TYPES = ['architect-console', 'client_attachment'];
-const WORKSPACE_DISPATCH_ACTIONS = ['workspace.created', 'workspace.dispatched', 'workspace.template.applied', 'summary.applied', 'summary.dispatched'];
+const ARCHITECT_OPERATION_LOG_TARGET_TYPES = ['architect-console', 'agent_window', 'client_attachment'];
+const WORKSPACE_COMMAND_ACTIONS = ['workspace.dispatch.create', 'workspace.dispatch.existing', 'summary.apply'];
+const WORKSPACE_DISPATCH_ACTIONS = ['workspace.created', 'workspace.dispatched', 'workspace.template.applied', 'summary.applied', 'summary.dispatched', ...WORKSPACE_COMMAND_ACTIONS];
 const RUNTIME_ATTACHMENT_ACTIONS = ['client.attach', 'client.detach', 'client.observe'];
 
 interface TeamDispatchTemplate {
@@ -82,6 +84,7 @@ const controlTab = ref<'dispatch' | 'summary' | 'logs'>('dispatch');
 const dispatching = ref(false);
 const saving = ref(false);
 const logLoading = ref(false);
+const recoveringInstanceEntry = ref(false);
 const logFilter = reactive({ action: '' });
 const dispatchForm = reactive({
   mode: 'new' as 'new' | 'existing',
@@ -136,6 +139,9 @@ const operationLogActionOptions = [
   { label: '生成汇总', value: 'summary.generated' },
   { label: '应用汇总', value: 'summary.applied' },
   { label: '一键再派单', value: 'summary.dispatched' },
+  { label: '命令：创建子窗口', value: 'workspace.dispatch.create' },
+  { label: '命令：派单到子窗口', value: 'workspace.dispatch.existing' },
+  { label: '命令：应用汇总', value: 'summary.apply' },
   { label: '客户端连接', value: 'client.attach' },
   { label: '客户端断开', value: 'client.detach' },
   { label: '客户端切换观测', value: 'client.observe' }
@@ -162,6 +168,12 @@ const sharedContextModeOptions = [
 const hasInstances = computed(() => instanceStore.items.length > 0);
 const enabledInstances = computed(() => sortInstancesByPreference(instanceStore.items.filter((item) => item.enabled)));
 const hasEnabledInstances = computed(() => enabledInstances.value.length > 0);
+const recoverInstanceActionLabel = computed(() =>
+  hasInstances.value ? '一键启用首个实例' : '一键创建默认 Codex 实例'
+);
+function isRecoverGuideAction(action: GuideAction) {
+  return action === 'recover-instance';
+}
 const workspaceSummaries = computed(() => finalizeWorkspaceSummaries(
   sessionStore.items
     .filter((item) => isCollaborativeWorkspaceSession(item))
@@ -610,11 +622,11 @@ const architectHeadline = computed(() => {
     return {
       title: hasInstances.value ? '先启用一个应用实例' : '先创建一个应用实例',
       description: workspaceSummaries.value.length
-        ? '当前还能查看已有子窗口，但因为没有启用实例，暂时无法继续新建或派发任务。请先到应用实例管理恢复一个可用实例。'
-        : '统一调度创建子窗口前需要一个已启用的应用实例。请先到应用实例管理创建或启用实例，再回来开始派单。',
+        ? '当前还能查看已有子窗口，但因为没有启用实例，暂时无法继续新建或派发任务。请先恢复一个可用实例。'
+        : '统一调度创建子窗口前需要一个已启用的应用实例。请先恢复一个可用实例，再回来开始派单。',
       tone: 'warning' as const,
-      actionLabel: '去应用实例管理',
-      action: 'instances' as GuideAction
+      actionLabel: recoverInstanceActionLabel.value,
+      action: 'recover-instance' as GuideAction
     };
   }
   if (!workspaceSummaries.value.length) {
@@ -698,7 +710,7 @@ function buildDashboardContextQuery(targetSessionId: string) {
 }
 const focusEmptyTips = computed(() => !workspaceSummaries.value.length && !hasEnabledInstances.value
   ? [
-    hasInstances.value ? '先去“应用实例管理”启用一个实例。' : '先去“应用实例管理”创建并启用一个实例。',
+    hasInstances.value ? '先恢复一个已存在的可用实例。' : '先创建并启用一个默认实例。',
     '回到总控台后，在右侧统一调度栏选择角色、实例和任务说明。',
     '点击“创建并派发”生成第一个子窗口。'
   ]
@@ -722,12 +734,12 @@ const operatorGuide = computed(() => {
         : '总控台负责派发子窗口，但创建子窗口前必须先有一个已启用的应用实例。',
       tone: 'warning' as const,
       steps: [
-        hasInstances.value ? '进入应用实例管理，启用一个可运行实例。' : '进入应用实例管理，创建并启用第一个实例。',
+        hasInstances.value ? '先恢复一个可运行实例。' : '先创建并启用第一个实例。',
         workspaceSummaries.value.length ? '回到总控台后，先确认右侧实例选择已经恢复。' : '回到总控台后选择角色、实例和任务说明。',
         workspaceSummaries.value.length ? '实例恢复后，再继续新建或派发任务。' : '点击“创建并派发”，生成第一个协作子窗口。'
       ],
-      actionLabel: '去应用实例管理',
-      action: 'instances' as GuideAction
+      actionLabel: recoverInstanceActionLabel.value,
+      action: 'recover-instance' as GuideAction
     };
   }
 
@@ -1233,7 +1245,9 @@ function applyLogToDispatch(log: OperationLogRecord) {
   const template = typeof detail.template === 'string' ? detail.template : '';
   const dispatchMode = typeof detail.dispatchMode === 'string'
     ? detail.dispatchMode
-    : (log.action === 'workspace.dispatched' ? 'existing' : 'new');
+    : ((log.action === 'workspace.dispatched' || log.action === 'workspace.dispatch.existing' || (log.action === 'summary.apply' && Boolean(log.targetId)))
+      ? 'existing'
+      : 'new');
   const targetWorkspace = log.targetId
     ? workspaceSummaries.value.find((item) => item.id === log.targetId) ?? null
     : null;
@@ -1716,6 +1730,10 @@ function handleGuideAction(action: GuideAction) {
     focusSummarySyncSource();
     return;
   }
+  if (action === 'recover-instance') {
+    void handleQuickRecoverInstance();
+    return;
+  }
   if (action === 'instances') {
     openInstanceAdmin();
     return;
@@ -1850,13 +1868,17 @@ function applySummaryToDispatch(showMessage = true) {
   };
   syncDispatchDefaults();
   openControlTab('dispatch');
-  void recordArchitectAction('summary.applied', 'success', buildDispatchOperationDetail({
+  const summaryApplyDetail = buildDispatchOperationDetail({
     template: summaryForm.templateKey,
     targetRole: summaryForm.targetRoleKey,
     sourceIds: summaryForm.selectedSessionIds,
     title: buildTemplateTitle(),
     instructionSnippet: summaryForm.draft.slice(0, 600)
-  }), summaryTargetWorkspace.value?.id);
+  });
+  void applyWorkspaceSummary({
+    targetSessionId: summaryTargetWorkspace.value?.id || undefined,
+    detail: summaryApplyDetail
+  }).then(() => loadOperationLogs()).catch(() => undefined);
   if (showMessage) {
     ElMessage.success(summaryTargetWorkspace.value ? '已带入派单，并将发送到现有子窗口' : '已带入派单，并将创建新子窗口');
   }
@@ -1969,7 +1991,7 @@ async function handleDispatch() {
         return false;
       }
       rememberPreferredInstance(dispatchForm.instanceId);
-      const session = await sessionStore.create({
+      const session = await dispatchWorkspaceCreate({
         appInstanceId: dispatchForm.instanceId,
         title: buildWorkspaceTitle(),
         projectPath: dispatchForm.projectPath,
@@ -1989,15 +2011,16 @@ async function handleDispatch() {
           deliverableSpec: dispatchForm.deliverable.trim() || null,
           sharedContextMode: dispatchForm.sharedContextMode,
           sharedContextLimit: dispatchForm.sharedContextLimit
-        }
+        },
+        detail: buildDispatchOperationDetail({
+          title: buildWorkspaceTitle(),
+          instructionSnippet: dispatchForm.instruction.slice(0, 400)
+        })
       });
       ElMessage.success('子窗口已创建');
-      await recordArchitectAction('workspace.created', 'success', buildDispatchOperationDetail({
-        title: buildWorkspaceTitle(),
-        instructionSnippet: dispatchForm.instruction.slice(0, 400)
-      }), session.id);
       resetDispatchPacketFields();
       await sessionStore.loadList();
+      await loadOperationLogs().catch(() => undefined);
       await focusWorkspace(session.id, 'running');
       return true;
     } else {
@@ -2009,29 +2032,36 @@ async function handleDispatch() {
         ElMessage.warning('目标子窗口当前不可继续派单');
         return false;
       }
-      await sessionStore.sendInput(dispatchForm.targetSessionId, dispatchPreview.value);
-      await sessionStore.updateWorkspaceMeta(dispatchForm.targetSessionId, {
-        workspaceKind: 'child',
-        role: dispatchForm.roleKey,
-        coordinationStatus: 'running',
-        progressSummary: dispatchForm.title.trim() || '架构师已下发新的执行指令',
-        blockedReason: '',
+      await dispatchWorkspaceExisting({
+        sessionId: dispatchForm.targetSessionId,
+        content: dispatchPreview.value,
+        appendNewLine: true,
+        recordInput: true,
+        workspaceMeta: {
+          workspaceKind: 'child',
+          role: dispatchForm.roleKey,
+          coordinationStatus: 'running',
+          progressSummary: dispatchForm.title.trim() || '架构师已下发新的执行指令',
+          blockedReason: '',
         dependencySessionIds: dispatchForm.dependencyIds,
         sharedContextSummary: collaborationSnapshot.value || '',
         sharedContextRefs: selectedSharedContextRefs.value,
-        taskScope: dispatchForm.scopeHint.trim(),
-        acceptanceCriteria: dispatchForm.acceptance.trim(),
-        deliverableSpec: dispatchForm.deliverable.trim(),
-        sharedContextMode: dispatchForm.sharedContextMode,
-        sharedContextLimit: dispatchForm.sharedContextLimit
+          taskScope: dispatchForm.scopeHint.trim(),
+          acceptanceCriteria: dispatchForm.acceptance.trim(),
+          deliverableSpec: dispatchForm.deliverable.trim(),
+          sharedContextMode: dispatchForm.sharedContextMode,
+          sharedContextLimit: dispatchForm.sharedContextLimit
+        },
+        detail: buildDispatchOperationDetail({
+          title: dispatchForm.title.trim() || '架构师已下发新的执行指令',
+          dispatchMode: 'existing',
+          instructionSnippet: dispatchForm.instruction.slice(0, 400)
+        })
       });
       ElMessage.success('调度指令已发送');
-      await recordArchitectAction('workspace.dispatched', 'success', buildDispatchOperationDetail({
-        title: dispatchForm.title.trim() || '架构师已下发新的执行指令',
-        dispatchMode: 'existing',
-        instructionSnippet: dispatchForm.instruction.slice(0, 400)
-      }), dispatchForm.targetSessionId);
       resetDispatchPacketFields();
+      await sessionStore.loadList();
+      await loadOperationLogs().catch(() => undefined);
       await focusWorkspace(dispatchForm.targetSessionId, 'running');
       return true;
     }
@@ -2095,6 +2125,22 @@ function openSessionDetail(sessionId: string) {
 function openSessionAdmin() { router.push('/sessions'); }
 function openInstanceAdmin() { router.push({ name: 'instances' }); }
 
+async function handleQuickRecoverInstance() {
+  recoveringInstanceEntry.value = true;
+  try {
+    const recovered = await instanceStore.recoverUsableInstance(configStore.defaultProjectPath);
+    rememberPreferredInstance(recovered.instance.id);
+    syncDispatchDefaults();
+    ElMessage.success(recovered.action === 'created'
+      ? '已创建默认 Codex 实例，可继续派发任务'
+      : '已恢复可用实例，可继续派发任务');
+  } catch (error) {
+    ElMessage.error((error as Error).message);
+  } finally {
+    recoveringInstanceEntry.value = false;
+  }
+}
+
 watch(() => [configStore.defaultProjectPath, enabledInstances.value.length], syncDispatchDefaults, { immediate: true });
 watch(() => dispatchForm.mode, (mode) => { if (mode === 'existing' && !dispatchForm.targetSessionId) syncDispatchDefaults(); if (mode === 'new') dispatchForm.targetSessionId = ''; }, { immediate: true });
 watch(activeLaneFilter, async () => {
@@ -2157,7 +2203,11 @@ onBeforeUnmount(() => {
           </div>
           <div class="architect-banner__actions">
             <el-tag :type="architectHeadline.tone" effect="dark">{{ activeLaneLabel }}</el-tag>
-            <el-button type="primary" @click="handleGuideAction(architectHeadline.action)">
+            <el-button
+              type="primary"
+              :loading="recoveringInstanceEntry && isRecoverGuideAction(architectHeadline.action)"
+              @click="handleGuideAction(architectHeadline.action)"
+            >
               {{ architectHeadline.actionLabel }}
             </el-button>
           </div>
@@ -2198,8 +2248,12 @@ onBeforeUnmount(() => {
               <span>{{ tip }}</span>
             </div>
             <div class="align-right">
-              <el-button type="primary" @click="handleGuideAction(!workspaceSummaries.length && !hasEnabledInstances ? 'instances' : 'dispatch')">
-                {{ !workspaceSummaries.length && !hasEnabledInstances ? '去应用实例管理' : '打开统一调度' }}
+              <el-button
+                type="primary"
+                :loading="recoveringInstanceEntry && !workspaceSummaries.length && !hasEnabledInstances"
+                @click="handleGuideAction(!workspaceSummaries.length && !hasEnabledInstances ? 'recover-instance' : 'dispatch')"
+              >
+                {{ !workspaceSummaries.length && !hasEnabledInstances ? recoverInstanceActionLabel : '打开统一调度' }}
               </el-button>
             </div>
           </div>
@@ -2475,7 +2529,13 @@ onBeforeUnmount(() => {
                 <div class="sidebar-guide__title">{{ operatorGuide.title }}</div>
                 <div class="sidebar-guide__desc">{{ operatorGuide.description }}</div>
               </div>
-              <el-button size="small" type="primary" plain @click="handleGuideAction(operatorGuide.action)">
+              <el-button
+                size="small"
+                type="primary"
+                plain
+                :loading="recoveringInstanceEntry && isRecoverGuideAction(operatorGuide.action)"
+                @click="handleGuideAction(operatorGuide.action)"
+              >
                 {{ operatorGuide.actionLabel }}
               </el-button>
             </div>
@@ -2532,7 +2592,10 @@ onBeforeUnmount(() => {
                   />
                   <div v-if="dispatchForm.mode === 'new' && !hasEnabledInstances" class="dispatch-instance-empty">
                     <span>准备好实例后，回到这里即可继续选择角色和派发任务。</span>
-                    <el-button size="small" type="primary" @click="openInstanceAdmin">去应用实例管理</el-button>
+                    <div class="page-toolbar page-toolbar--compact">
+                      <el-button size="small" type="primary" :loading="recoveringInstanceEntry" @click="handleQuickRecoverInstance">{{ recoverInstanceActionLabel }}</el-button>
+                      <el-button size="small" @click="openInstanceAdmin">去应用实例管理</el-button>
+                    </div>
                   </div>
                   <el-form-item v-if="dispatchForm.mode === 'new' && hasEnabledInstances" label="实例"><el-select v-model="dispatchForm.instanceId" style="width:100%" @change="handleDispatchInstanceChange"><el-option v-for="instance in enabledInstances" :key="instance.id" :label="`${instance.name} (${instance.appType || '未标注类型'})`" :value="instance.id" /></el-select></el-form-item>
                   <el-form-item v-else-if="dispatchForm.mode === 'existing'" label="目标窗口"><el-select v-model="dispatchForm.targetSessionId" style="width:100%" placeholder="当前没有可继续派单的子窗口"><el-option v-for="workspace in dispatchableWorkspaces" :key="workspace.id" :label="`${workspace.role.label} · ${workspace.title}`" :value="workspace.id" /></el-select></el-form-item>

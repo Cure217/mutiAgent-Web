@@ -1,11 +1,17 @@
 export interface RuntimeHealth {
   status: string;
   timestamp: string;
+  startedAt?: string | null;
+  readyAt?: string | null;
+  uptimeMs?: number | null;
   dbPath: string;
   baseDir: string;
+  runtimeDir?: string | null;
+  appLogPath?: string | null;
   runningProcesses: number;
   attachedClientCount: number;
   observingSessionAttachmentCount: number;
+  recentLifecycleEvents?: RuntimeLifecycleEventInfo[];
 }
 
 export interface RuntimeStatistics {
@@ -27,6 +33,16 @@ export interface RuntimeAttachmentInfo {
   observedTargetId?: string | null;
   userAgent?: string | null;
   remoteAddress?: string | null;
+}
+
+export interface RuntimeLifecycleEventInfo {
+  type: string;
+  observedAt: string;
+  sessionId?: string | null;
+  status?: string | null;
+  exitCode?: number | null;
+  exitReason?: string | null;
+  message?: string | null;
 }
 
 export interface ProcessInfo {
